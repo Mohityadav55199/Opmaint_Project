@@ -487,7 +487,7 @@ export function checkAction(
       }
 
       // Extension rules: max 2 extensions, max 4 total hours, only 1 pending
-      const summary = getPermitExtensionSummary(permit as any);
+      const summary = getPermitExtensionSummary(permit);
       if (summary.hasPending) {
         return {
           allowed: false,

@@ -129,5 +129,6 @@ export interface PermitData {
   area?: AreaData; // Populated from equipment.area
   approvals?: ApprovalData[];
   entryExitLogs?: EntryExitLogData[];
+  extensions?: { id?: string; status: ExtensionStatus; requestedHours: number; reason?: string }[];
 }
 

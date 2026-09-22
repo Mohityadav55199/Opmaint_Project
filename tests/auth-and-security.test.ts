@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { signToken, verifyJwt, getAuthenticatedUser } from "../src/lib/auth";
 import { checkAction } from "../src/domain/state-machine/authorization";
-import { AuthenticatedUser, PermitData } from "../src/domain/types";
+import { PermitData } from "../src/domain/types";
 
 describe("JWT Authentication & User Deactivation Security", () => {
   const REAL_SECRET = "production-grade-random-secret-key-for-testing-12345";

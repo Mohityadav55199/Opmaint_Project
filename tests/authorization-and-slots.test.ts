@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { checkAction, getAvailableActions } from "../src/domain/state-machine/authorization";
-import { canUserSatisfySlot, canUserReject, evaluateApprovalSlots } from "../src/domain/approvals/slots";
+import { canUserReject } from "../src/domain/approvals/slots";
 import { AuthenticatedUser, PermitData } from "../src/domain/types";
 
 function createMockPermit(overrides: Partial<PermitData> = {}): PermitData {
@@ -409,7 +409,7 @@ describe("RBAC and Approval Slots Engine", () => {
       const permitWithPending = createMockPermit({
         status: "ACTIVE",
         extensions: [{ status: "PENDING", requestedHours: 2 }],
-      } as any);
+      });
       const checkPending = checkAction(permitWithPending, requester, "REQUEST_EXTENSION");
       expect(checkPending.allowed).toBe(false);
       expect(checkPending.reason).toMatch(/already pending review/);
@@ -421,7 +421,7 @@ describe("RBAC and Approval Slots Engine", () => {
           { status: "APPROVED", requestedHours: 1 },
           { status: "APPROVED", requestedHours: 1 },
         ],
-      } as any);
+      });
       const checkCount = checkAction(permitMaxCount, requester, "REQUEST_EXTENSION");
       expect(checkCount.allowed).toBe(false);
       expect(checkCount.reason).toMatch(/Maximum number of extensions \(2\) reached/);
@@ -430,7 +430,7 @@ describe("RBAC and Approval Slots Engine", () => {
       const permitMaxHours = createMockPermit({
         status: "ACTIVE",
         extensions: [{ status: "APPROVED", requestedHours: 4 }],
-      } as any);
+      });
       const checkHours = checkAction(permitMaxHours, requester, "REQUEST_EXTENSION");
       expect(checkHours.allowed).toBe(false);
       expect(checkHours.reason).toMatch(/Maximum cumulative extension duration \(4 hours\) reached/);

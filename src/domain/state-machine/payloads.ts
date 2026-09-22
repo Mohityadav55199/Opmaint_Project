@@ -2,20 +2,32 @@ import { z } from "zod";
 import { PermitAction } from "../types";
 
 export const rejectPayloadSchema = z.object({
-  reason: z.string().trim().min(1, "A mandatory non-empty rejection reason is required."),
+  reason: z
+    .string({ message: "A mandatory non-empty rejection reason is required." })
+    .trim()
+    .min(1, "A mandatory non-empty rejection reason is required."),
   slot: z.enum(["AREA_OWNER", "SAFETY_OFFICER"]).optional(),
 });
 
 export const suspendPayloadSchema = z.object({
-  reason: z.string().trim().min(1, "A mandatory non-empty suspension reason is required."),
+  reason: z
+    .string({ message: "A mandatory non-empty suspension reason is required." })
+    .trim()
+    .min(1, "A mandatory non-empty suspension reason is required."),
 });
 
 export const cancelPayloadSchema = z.object({
-  reason: z.string().trim().min(1, "A mandatory non-empty cancellation reason is required."),
+  reason: z
+    .string({ message: "A mandatory non-empty cancellation reason is required." })
+    .trim()
+    .min(1, "A mandatory non-empty cancellation reason is required."),
 });
 
 export const closePayloadSchema = z.object({
-  workCompletionNotes: z.string().trim().min(1, "Work completion notes and housekeeping confirmation are required to close the permit."),
+  workCompletionNotes: z
+    .string({ message: "Work completion notes and housekeeping confirmation are required to close the permit." })
+    .trim()
+    .min(1, "Work completion notes and housekeeping confirmation are required to close the permit."),
 });
 
 export const verifyClosurePayloadSchema = z.object({

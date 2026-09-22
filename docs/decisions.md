@@ -1,87 +1,111 @@
 # Architectural Decisions Log
 
-This document records the architectural and business decisions made where the assignment specification was silent or flexible.
+This document records the architectural and business decisions made for the Opmaint Permit to Work (PTW) system, formalizing all rules across the domain model, state transitions, security, and data integrity.
 
 ---
 
-### 1. Required Approver Slots
-- **Decision**: By default, every permit requires two distinct approver slots:
-  1. `AREA_OWNER` (must be assigned to the equipment's derived area).
-  2. `SAFETY_OFFICER`.
-- **Rationale**: Industrial plants require both operational ownership (the Area Owner who controls the plant area/equipment) and safety oversight (the Safety Officer who verifies gas tests, atmospheric readings, and emergency preparedness). Simple count-based approvals fail if two Safety Officers approve without Area Owner sign-off.
-- **Enforcement**: Stored in `Approval` with a `slot` enum and unique constraint `@@unique([permitId, round, slot])`.
-
----
-
-### 2. Admin Approval & Self-Approval Behavior
+### 1. Area Ownership & Location Derivation Model
 - **Decision**: 
-  - An Admin CANNOT approve their own permit under any circumstance.
-  - An Admin can satisfy the `SAFETY_OFFICER` slot if they are not the requester.
-  - An Admin CANNOT satisfy the `AREA_OWNER` slot unless they are explicitly assigned as the owner of that specific area.
-- **Rationale**: Safety-critical compliance mandates separation of duties. No single user, regardless of administrative privileges, may unilaterally author and self-authorize dangerous industrial work.
+  - `Equipment` is the sole authoritative anchor for a permit's plant and area location: `Permit -> Equipment -> Area -> Plant`.
+  - Redundant `Permit.areaId` and `Permit.plantId` database columns are removed from the database schema to eliminate denormalization anomalies.
+  - The client is **never** trusted to provide `areaId` or `plantId`. Location is strictly resolved server-side from `equipmentId`.
+  - An `Area` has an authoritative `ownerId` referencing a `User`.
+  - The `AREA_OWNER` approval slot is strictly bounded to `permit.equipment.area.ownerId`. An Area Owner for Area B cannot approve or reject permits for equipment belonging to Area A.
 
 ---
 
-### 3. State Transition: Who Can Resume a Suspended Permit?
-- **Decision**: Only a `SAFETY_OFFICER` or an `ADMIN` can resume a `SUSPENDED` permit. The `REQUESTER` cannot resume.
-- **Rationale**: Suspension happens for safety reasons (e.g., gas leak alarm, hazardous weather, emergency). Work must not restart until safety personnel re-inspect the atmosphere and clear the hazard.
-- **Condition**: Must still be valid (`now < expiresAt`). If the validity window passed while suspended, the permit transitions to `EXPIRED` and cannot be resumed.
-
----
-
-### 4. Who Can Cancel a Permit?
+### 2. Expiry Semantics & Authoritative Validity Boundary
 - **Decision**:
-  - The `REQUESTER` (owner) can cancel their own non-terminal permit at any time.
-  - A `SAFETY_OFFICER` or `ADMIN` can cancel any non-terminal permit.
-  - An `AREA_OWNER` cannot cancel permits (they can reject during approval).
-- **Rationale**: The requester may call off the job if contractor personnel fail to report or plant conditions change. Safety Officers need emergency cancellation authority. All cancellations require a mandatory, non-empty cancellation reason.
+  - `plannedStartTime`: Scheduled start of maintenance work.
+  - `plannedEndTime`: Originally requested/planned end of work.
+  - `expiresAt`: **Authoritative current permit validity boundary**.
+  - All operations — activation, resume, lazy expiry, extension validation, and conflict checking — use `expiresAt` as the single source of truth.
+  - `expiresAt` is initialized to `plannedEndTime` on permit creation and updated transactionally when a `PermitExtension` is approved.
+  - Expiry is enforced across all non-terminal states (`DRAFT`, `PENDING_APPROVAL`, `APPROVED`, `ACTIVE`, `SUSPENDED`). When `now >= expiresAt`, the permit cannot be approved, activated, or resumed, and transitions to `EXPIRED`.
 
 ---
 
-### 5. Expiry Behavior & Inactive State Expiry
+### 3. Maximum Validity per Permit Type
+- **Decision**: Each permit type registered in `PermitTypeRegistry` specifies a hard ceiling `maxValidityHours`:
+  - `HOT_WORK`: 12 hours (standard single shift)
+  - `CONFINED_SPACE_ENTRY`: 12 hours (continuous attendant requirement)
+  - `WORKING_AT_HEIGHT`: 12 hours (daylight/shift requirement)
+  - `ELECTRICAL_ISOLATION_LOTO`: 24 hours (isolated machinery turnaround)
+  - `EXCAVATION`: 24 hours (daily soil inspection cycle)
+- **Enforcement**: At submission (`SUBMIT`), `(plannedEndTime - plannedStartTime) / 3600000 <= type.maxValidityHours` is strictly validated. Submissions exceeding this limit are rejected with HTTP 422.
+
+---
+
+### 4. Post-Submission Edits & Safety-Critical Fields
 - **Decision**:
-  - `expiresAt` is the authoritative single timestamp, initialized to `plannedEndTime` (or extended via `PermitExtension`).
-  - Active rule: `now >= expiresAt`.
-  - Can `APPROVED` expire? **Yes**. If a permit is approved but the planned end time passes before the technician activates it, it automatically transitions to `EXPIRED` and cannot be activated.
-  - Can `PENDING_APPROVAL` expire? **Yes**. If the planned window passes while waiting for approvals, it transitions to `EXPIRED`.
-  - Can `SUSPENDED` expire? **Yes**. If conditions are not cleared before the shift/window ends, it transitions to `EXPIRED`.
-  - Serverless handling: Lazy evaluation on every read/action mutation guarantees 100% correctness without relying solely on long-running node processes. A `/api/cron/expire` endpoint serves as a backstop.
+  - `EDIT` is only permitted while the permit is in `DRAFT` status by the requester or Admin.
+  - Once submitted (`PENDING_APPROVAL`, `APPROVED`, `ACTIVE`), core safety fields cannot be silently updated.
+  - **Safety-Critical Fields**: `equipmentId`, `plannedStartTime`, `plannedEndTime`, `expiresAt`, `hazards`, `ppeRequired`, `precautionsChecklist`, and `typeData`.
+  - If a submitted or approved permit requires safety modifications, it must be recalled/cancelled and re-submitted, or increment `approvalRound` to completely reset approvals.
+  - Every change to a permit records an immutable row in `AuditLog` capturing `actorId`, `actorRole`, `action`, `field`, `fromValue`, and `toValue`.
 
 ---
 
-### 6. Post-Submission Edit & Approval Invalidation Behavior
+### 5. Rejection Semantics
 - **Decision**:
-  - Edits to safety-critical fields (equipment, schedule, hazards, precautions, or `typeData`) after submission invalidate all previously granted approvals.
-  - The permit's `approvalRound` increments (`round = round + 1`), and previous approvals remain associated with the prior round in the audit history.
-  - If the permit was `APPROVED`, it reverts to `PENDING_APPROVAL`.
-  - Every changed field logs an immutable `AuditLog` row with `field`, `fromValue`, and `toValue`.
-- **Rationale**: Approving a welding permit for a 2-hour window on a pipe rack cannot remain valid if the requester quietly alters the scope to a high-pressure gas line or extends the time into the next shift.
+  - Rejection is recorded directly against an **unfilled approval slot** for the current `approvalRound`.
+  - A user may `REJECT` only if:
+    1. The permit is in `PENDING_APPROVAL` status.
+    2. The user is eligible to fill a required approval slot for this permit.
+    3. That specific slot is currently **unfilled** in the current round.
+    4. The user has not already approved another slot in the same round.
+    5. The user is not the requester (`permit.requesterId !== user.id`). Requesters must use `CANCEL`.
+    6. The user is not attempting to reject through an already-approved slot.
+  - A mandatory, trimmed, non-empty `reason` payload is required (`rejectPayloadSchema`).
+  - Upon rejection, the permit transitions immediately to terminal state `REJECTED`.
 
 ---
 
-### 7. Extension Policy
+### 6. Cancellation Rules by State and Role
 - **Decision**:
-  - Extensions can only be requested while the permit is in `ACTIVE` state and before `expiresAt`.
-  - Modeled as a separate `PermitExtension` entity.
-  - Cap: Maximum of **2 extensions** per permit, and maximum total extension of **4 hours**.
-  - Requires explicit re-approval by a `SAFETY_OFFICER`.
-  - Once approved, `expiresAt` is updated and an audit entry is recorded.
-- **Rationale**: Uncapped extensions lead to "infinite permits" that bypass shift handover safety reviews.
+  - `DRAFT`: Requester or Admin may cancel.
+  - `PENDING_APPROVAL`: Requester or Admin may cancel.
+  - `APPROVED` (prior to activation): Requester or Admin may cancel.
+  - `ACTIVE`: **Only a Safety Officer or an Administrator may cancel**. Requesters are strictly forbidden from cancelling active work to prevent bypassing formal safety closeout and housekeeping inspections.
+  - `SUSPENDED`: **Only a Safety Officer or an Administrator may cancel**.
+  - All cancellations require a mandatory, trimmed, non-empty `reason` payload (`cancelPayloadSchema`).
 
 ---
 
-### 8. Plant Timezone Handling
-- **Decision**: Standardize plant operations on **India Standard Time (IST, UTC+5:30)**.
-- **Rationale**: Both seed plants (Chennai Petrochemicals Complex and Ennore Thermal Power Station) operate in Tamil Nadu, India. Shift timings and validity windows reflect local plant floor clocks. Timestamps are stored in UTC in PostgreSQL and rendered in IST with clear timezone indicators on all UI screens.
+### 7. Extension Policy & Constraints
+- **Decision**:
+  - Extensions can only be requested on `ACTIVE` or `SUSPENDED` permits before `expiresAt`.
+  - Rules enforced in domain and database:
+    1. Maximum of **2 extensions** per permit.
+    2. Maximum cumulative extension duration of **4 hours** across all extensions.
+    3. Maximum single extension duration of **4 hours** (`requestedHours: 1..4`).
+    4. Only **one pending extension** at a time (enforced via PostgreSQL partial unique index `WHERE status = 'PENDING'`).
+  - Requester requests extension (`REQUEST_EXTENSION`); only a `SAFETY_OFFICER` or `ADMIN` can `APPROVE_EXTENSION` or `REJECT_EXTENSION`.
+  - Requester cannot approve their own extension.
 
 ---
 
-### 9. Conflict Detection Behavior: Warning vs Blocking
-- **Decision**: Spatial-temporal overlap between `HOT_WORK` and `CONFINED_SPACE_ENTRY` triggers a **Prominent Hazard Warning** with mandatory acknowledgement rather than a hard hardcoded system block.
-- **Rationale**: In real industrial plants, simultaneous operations (SIMOPS) may occur in the same broad area if separated by physical barriers or safety curtains under special variance. The system must actively alert both approvers and log the conflict acknowledgement in the audit trail.
+### 8. Closure Separation of Duties
+- **Decision**:
+  - Marking work complete (`CLOSE`) transitions `ACTIVE -> CLOSED` and records `closedById: user.id` and `workCompletionNotes`. Requester or Admin can close.
+  - Formal closure verification (`VERIFY_CLOSURE`) transitions `CLOSED -> CLOSED_VERIFIED` (terminal).
+  - Separation of duties:
+    - `verifier.id !== permit.requesterId` (Zero self-verification).
+    - `verifier.id !== permit.closedById` (The person who closed work cannot verify their own closure).
+    - Verifier must hold role `SAFETY_OFFICER` or `ADMIN`.
 
 ---
 
-### 10. QR Code Visibility & Scanning
-- **Decision**: Every permit detail view includes a generated QR code encoding the permit's permanent URL (`/permits/[id]`). Scanning opens the mobile-optimized permit inspection view.
-- **Rationale**: Allows safety auditors on walking rounds with mobile devices to instantly scan physical printouts or posted tablets and verify live permit status.
+### 9. Public vs Authenticated Access to `/permits/[id]`
+- **Decision**:
+  - **Read-Only Status View**: Unauthenticated / public access is allowed for read-only inspection (e.g. scanning a printed QR code on physical plant equipment). It displays permit status, validity window, safety precautions, and active hazards.
+  - **Action & Mutation Controls**: All workflow actions (`APPROVE`, `REJECT`, `ACTIVATE`, `SUSPEND`, `RESUME`, `CLOSE`, `VERIFY_CLOSURE`, `CANCEL`, `EXTEND`) strictly require authentication via JWT.
+  - Authentication validates the JWT against PostgreSQL, verifying `User.isActive === true` and enforcing the database's authoritative role rather than trusting JWT claims.
+
+---
+
+### 10. Audit Trail Immutability
+- **Decision**:
+  - `AuditLog` is strictly append-only.
+  - Foreign keys: `AuditLog.permitId -> RESTRICT` and `AuditLog.actorId -> RESTRICT` to prevent cascading deletions from removing audit evidence.
+  - PostgreSQL trigger `enforce_audit_log_immutability` blocks any `UPDATE` or `DELETE` operations on `AuditLog` at the database level.

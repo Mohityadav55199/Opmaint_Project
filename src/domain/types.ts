@@ -15,6 +15,7 @@ export type PermitStatus =
 export type ApprovalSlot = "AREA_OWNER" | "SAFETY_OFFICER";
 export type ApprovalDecision = "APPROVED" | "REJECTED";
 export type ExtensionStatus = "PENDING" | "APPROVED" | "REJECTED";
+export type EntryExitDirection = "ENTRY" | "EXIT";
 
 export type PermitAction =
   | "SUBMIT"
@@ -26,15 +27,27 @@ export type PermitAction =
   | "CLOSE"
   | "VERIFY_CLOSURE"
   | "CANCEL"
+  | "EDIT"
+  | "LOG_WORK"
+  | "LOG_ENTRY_EXIT"
   | "REQUEST_EXTENSION"
   | "APPROVE_EXTENSION"
-  | "REJECT_EXTENSION";
+  | "REJECT_EXTENSION"
+  | "EXPIRE";
 
 export interface AuthenticatedUser {
   id: string;
   name: string;
   email: string;
   role: Role;
+  isActive?: boolean;
+}
+
+export interface PlantData {
+  id: string;
+  code: string;
+  name: string;
+  timezone: string;
 }
 
 export interface AreaData {
@@ -43,6 +56,7 @@ export interface AreaData {
   code: string;
   name: string;
   ownerId: string;
+  plant?: PlantData;
 }
 
 export interface EquipmentData {
@@ -51,6 +65,7 @@ export interface EquipmentData {
   tagNumber: string;
   name: string;
   criticality: string;
+  area?: AreaData;
 }
 
 export interface ApprovalData {
@@ -65,6 +80,16 @@ export interface ApprovalData {
   createdAt: Date;
 }
 
+export interface EntryExitLogData {
+  id: string;
+  permitId: string;
+  direction: EntryExitDirection;
+  personName: string;
+  at: Date;
+  recordedById: string;
+  createdAt: Date;
+}
+
 export interface PermitData {
   id: string;
   permitSequence: number;
@@ -75,8 +100,8 @@ export interface PermitData {
   contractorTeam: string;
   workDescription: string;
   equipmentId: string;
-  areaId: string;
-  plantId: string;
+  areaId?: string; // Derived from equipment.area.id
+  plantId?: string; // Derived from equipment.area.plantId
   plannedStartTime: Date;
   plannedEndTime: Date; // Originally planned/requested end time
   expiresAt: Date; // Authoritative validity boundary
@@ -93,10 +118,16 @@ export interface PermitData {
   cancellationReason?: string | null;
   workCompletionNotes?: string | null;
   closureVerifiedNotes?: string | null;
+  activatedById?: string | null;
+  suspendedById?: string | null;
+  closedById?: string | null;
   createdAt: Date;
   updatedAt: Date;
 
   // Populated relations
-  area?: AreaData;
+  equipment?: EquipmentData;
+  area?: AreaData; // Populated from equipment.area
   approvals?: ApprovalData[];
+  entryExitLogs?: EntryExitLogData[];
 }
+

@@ -43,27 +43,37 @@ enum ExtensionStatus {
   REJECTED
 }
 
+enum EntryExitDirection {
+  ENTRY
+  EXIT
+}
+
 model User {
   id           String   @id @default(cuid())
   name         String
   email        String   @unique
   passwordHash String
   role         Role
+  isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   // Relations
   ownedAreas          Area[]            @relation("AreaOwner")
   requestedPermits    Permit[]          @relation("PermitRequester")
+  activatedPermits    Permit[]          @relation("PermitActivator")
+  suspendedPermits    Permit[]          @relation("PermitSuspender")
+  closedPermits       Permit[]          @relation("PermitCloser")
   approvals           Approval[]
   workLogs            WorkLogEntry[]
-  entryExitLogs       EntryExitLog[]    @relation("AttendantLogs")
+  recordedEntryExits  EntryExitLog[]    @relation("RecordedEntryExitLogs")
   requestedExtensions PermitExtension[] @relation("ExtensionRequester")
   reviewedExtensions  PermitExtension[] @relation("ExtensionReviewer")
   auditLogs           AuditLog[]
 
   @@index([email])
   @@index([role])
+  @@index([isActive])
 }
 
 model Plant {
@@ -74,8 +84,7 @@ model Plant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  areas   Area[]
-  permits Permit[]
+  areas Area[]
 }
 
 model Area {
@@ -90,7 +99,6 @@ model Area {
   plant     Plant       @relation(fields: [plantId], references: [id], onDelete: Cascade)
   owner     User        @relation("AreaOwner", fields: [ownerId], references: [id])
   equipment Equipment[]
-  permits   Permit[]
 
   @@unique([plantId, code])
   @@index([ownerId])
@@ -120,9 +128,7 @@ model Permit {
   requesterId          String
   contractorTeam       String
   workDescription      String
-  equipmentId          String // Authoritative source for Area & Plant
-  areaId               String // Derived from Equipment
-  plantId              String // Derived from Equipment
+  equipmentId          String // Sole authoritative location anchor -> Equipment -> Area -> Plant
   plannedStartTime     DateTime
   plannedEndTime       DateTime // Originally planned/requested end time
   expiresAt            DateTime // Authoritative validity boundary
@@ -139,24 +145,27 @@ model Permit {
   cancellationReason   String?
   workCompletionNotes  String?
   closureVerifiedNotes String?
+  activatedById        String?
+  suspendedById        String?
+  closedById           String?
   createdAt            DateTime     @default(now())
   updatedAt            DateTime     @updatedAt
 
   // Relations
-  equipment      Equipment         @relation(fields: [equipmentId], references: [id])
-  area           Area              @relation(fields: [areaId], references: [id])
-  plant          Plant             @relation(fields: [plantId], references: [id])
-  requester      User              @relation("PermitRequester", fields: [requesterId], references: [id])
-  approvals      Approval[]
-  workLogs       WorkLogEntry[]
-  entryExitLogs  EntryExitLog[]
-  extensions     PermitExtension[]
-  auditLogs      AuditLog[]
+  equipment     Equipment         @relation(fields: [equipmentId], references: [id])
+  requester     User              @relation("PermitRequester", fields: [requesterId], references: [id])
+  activatedBy   User?             @relation("PermitActivator", fields: [activatedById], references: [id])
+  suspendedBy   User?             @relation("PermitSuspender", fields: [suspendedById], references: [id])
+  closedBy      User?             @relation("PermitCloser", fields: [closedById], references: [id])
+  approvals     Approval[]
+  workLogs      WorkLogEntry[]
+  entryExitLogs EntryExitLog[]
+  extensions    PermitExtension[]
+  auditLogs     AuditLog[]
 
   @@index([status])
   @@index([type])
-  @@index([areaId])
-  @@index([plantId])
+  @@index([equipmentId])
   @@index([requesterId])
   @@index([expiresAt])
   @@index([plannedStartTime, plannedEndTime])
@@ -177,6 +186,7 @@ model Approval {
   approver User   @relation(fields: [approverId], references: [id])
 
   @@unique([permitId, round, slot])
+  @@unique([permitId, round, approverId]) // Guard: same approver cannot fill both slots in the same round
   @@index([permitId, round])
   @@index([approverId])
 }
@@ -196,18 +206,18 @@ model WorkLogEntry {
 }
 
 model EntryExitLog {
-  id          String    @id @default(cuid())
-  permitId    String
-  workerName  String
-  enteredAt   DateTime  @default(now())
-  exitedAt    DateTime?
-  attendantId String
-  createdAt   DateTime  @default(now())
+  id           String             @id @default(cuid())
+  permitId     String
+  direction    EntryExitDirection @default(ENTRY)
+  personName   String
+  at           DateTime           @default(now())
+  recordedById String
+  createdAt    DateTime           @default(now())
 
-  permit    Permit @relation(fields: [permitId], references: [id], onDelete: Cascade)
-  attendant User   @relation("AttendantLogs", fields: [attendantId], references: [id])
+  permit     Permit @relation(fields: [permitId], references: [id], onDelete: Cascade)
+  recordedBy User   @relation("RecordedEntryExitLogs", fields: [recordedById], references: [id])
 
-  @@index([permitId])
+  @@index([permitId, at])
 }
 
 model PermitExtension {
@@ -244,8 +254,8 @@ model AuditLog {
   metadata   Json?
   createdAt  DateTime @default(now())
 
-  permit Permit @relation(fields: [permitId], references: [id], onDelete: Cascade)
-  actor  User?  @relation(fields: [actorId], references: [id])
+  permit Permit @relation(fields: [permitId], references: [id], onDelete: Restrict)
+  actor  User?  @relation(fields: [actorId], references: [id], onDelete: Restrict)
 
   @@index([permitId, createdAt])
 }

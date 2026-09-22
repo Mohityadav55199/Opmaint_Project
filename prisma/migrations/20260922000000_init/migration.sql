@@ -13,6 +13,9 @@ CREATE TYPE "ApprovalDecision" AS ENUM ('APPROVED', 'REJECTED');
 -- CreateEnum
 CREATE TYPE "ExtensionStatus" AS ENUM ('PENDING', 'APPROVED', 'REJECTED');
 
+-- CreateEnum
+CREATE TYPE "EntryExitDirection" AS ENUM ('ENTRY', 'EXIT');
+
 -- CreateTable
 CREATE TABLE "User" (
     "id" TEXT NOT NULL,
@@ -20,6 +23,7 @@ CREATE TABLE "User" (
     "email" TEXT NOT NULL,
     "passwordHash" TEXT NOT NULL,
     "role" "Role" NOT NULL,
+    "isActive" BOOLEAN NOT NULL DEFAULT true,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -75,8 +79,6 @@ CREATE TABLE "Permit" (
     "contractorTeam" TEXT NOT NULL,
     "workDescription" TEXT NOT NULL,
     "equipmentId" TEXT NOT NULL,
-    "areaId" TEXT NOT NULL,
-    "plantId" TEXT NOT NULL,
     "plannedStartTime" TIMESTAMP(3) NOT NULL,
     "plannedEndTime" TIMESTAMP(3) NOT NULL,
     "expiresAt" TIMESTAMP(3) NOT NULL,
@@ -93,10 +95,15 @@ CREATE TABLE "Permit" (
     "cancellationReason" TEXT,
     "workCompletionNotes" TEXT,
     "closureVerifiedNotes" TEXT,
+    "activatedById" TEXT,
+    "suspendedById" TEXT,
+    "closedById" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "Permit_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "Permit_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "chk_permit_planned_time" CHECK ("plannedEndTime" > "plannedStartTime"),
+    CONSTRAINT "chk_permit_expires_after_planned" CHECK ("expiresAt" >= "plannedEndTime")
 );
 
 -- CreateTable
@@ -130,10 +137,10 @@ CREATE TABLE "WorkLogEntry" (
 CREATE TABLE "EntryExitLog" (
     "id" TEXT NOT NULL,
     "permitId" TEXT NOT NULL,
-    "workerName" TEXT NOT NULL,
-    "enteredAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "exitedAt" TIMESTAMP(3),
-    "attendantId" TEXT NOT NULL,
+    "direction" "EntryExitDirection" NOT NULL DEFAULT 'ENTRY',
+    "personName" TEXT NOT NULL,
+    "at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "recordedById" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "EntryExitLog_pkey" PRIMARY KEY ("id")
@@ -153,7 +160,8 @@ CREATE TABLE "PermitExtension" (
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "PermitExtension_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "PermitExtension_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "chk_extension_hours" CHECK ("requestedHours" > 0)
 );
 
 -- CreateTable
@@ -178,6 +186,7 @@ CREATE TABLE "AuditLog" (
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
 CREATE INDEX "User_email_idx" ON "User"("email");
 CREATE INDEX "User_role_idx" ON "User"("role");
+CREATE INDEX "User_isActive_idx" ON "User"("isActive");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Plant_code_key" ON "Plant"("code");
@@ -194,8 +203,7 @@ CREATE INDEX "Equipment_areaId_idx" ON "Equipment"("areaId");
 CREATE UNIQUE INDEX "Permit_permitNumber_key" ON "Permit"("permitNumber");
 CREATE INDEX "Permit_status_idx" ON "Permit"("status");
 CREATE INDEX "Permit_type_idx" ON "Permit"("type");
-CREATE INDEX "Permit_areaId_idx" ON "Permit"("areaId");
-CREATE INDEX "Permit_plantId_idx" ON "Permit"("plantId");
+CREATE INDEX "Permit_equipmentId_idx" ON "Permit"("equipmentId");
 CREATE INDEX "Permit_requesterId_idx" ON "Permit"("requesterId");
 CREATE INDEX "Permit_expiresAt_idx" ON "Permit"("expiresAt");
 CREATE INDEX "Permit_plannedStartTime_plannedEndTime_idx" ON "Permit"("plannedStartTime", "plannedEndTime");
@@ -204,15 +212,18 @@ CREATE INDEX "Permit_plannedStartTime_plannedEndTime_idx" ON "Permit"("plannedSt
 CREATE INDEX "Approval_permitId_round_idx" ON "Approval"("permitId", "round");
 CREATE INDEX "Approval_approverId_idx" ON "Approval"("approverId");
 CREATE UNIQUE INDEX "Approval_permitId_round_slot_key" ON "Approval"("permitId", "round", "slot");
+CREATE UNIQUE INDEX "Approval_permitId_round_approverId_key" ON "Approval"("permitId", "round", "approverId");
 
 -- CreateIndex
 CREATE INDEX "WorkLogEntry_permitId_idx" ON "WorkLogEntry"("permitId");
 
 -- CreateIndex
-CREATE INDEX "EntryExitLog_permitId_idx" ON "EntryExitLog"("permitId");
+CREATE INDEX "EntryExitLog_permitId_at_idx" ON "EntryExitLog"("permitId", "at");
 
 -- CreateIndex
 CREATE INDEX "PermitExtension_permitId_idx" ON "PermitExtension"("permitId");
+-- Partial Unique Index: only one PENDING extension allowed per permit
+CREATE UNIQUE INDEX "PermitExtension_single_pending_idx" ON "PermitExtension"("permitId") WHERE "status" = 'PENDING';
 
 -- CreateIndex
 CREATE INDEX "AuditLog_permitId_createdAt_idx" ON "AuditLog"("permitId", "createdAt");
@@ -226,9 +237,10 @@ ALTER TABLE "Equipment" ADD CONSTRAINT "Equipment_areaId_fkey" FOREIGN KEY ("are
 
 -- AddForeignKey
 ALTER TABLE "Permit" ADD CONSTRAINT "Permit_equipmentId_fkey" FOREIGN KEY ("equipmentId") REFERENCES "Equipment"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-ALTER TABLE "Permit" ADD CONSTRAINT "Permit_areaId_fkey" FOREIGN KEY ("areaId") REFERENCES "Area"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-ALTER TABLE "Permit" ADD CONSTRAINT "Permit_plantId_fkey" FOREIGN KEY ("plantId") REFERENCES "Plant"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "Permit" ADD CONSTRAINT "Permit_requesterId_fkey" FOREIGN KEY ("requesterId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "Permit" ADD CONSTRAINT "Permit_activatedById_fkey" FOREIGN KEY ("activatedById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "Permit" ADD CONSTRAINT "Permit_suspendedById_fkey" FOREIGN KEY ("suspendedById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "Permit" ADD CONSTRAINT "Permit_closedById_fkey" FOREIGN KEY ("closedById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Approval" ADD CONSTRAINT "Approval_permitId_fkey" FOREIGN KEY ("permitId") REFERENCES "Permit"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -240,7 +252,7 @@ ALTER TABLE "WorkLogEntry" ADD CONSTRAINT "WorkLogEntry_authorId_fkey" FOREIGN K
 
 -- AddForeignKey
 ALTER TABLE "EntryExitLog" ADD CONSTRAINT "EntryExitLog_permitId_fkey" FOREIGN KEY ("permitId") REFERENCES "Permit"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-ALTER TABLE "EntryExitLog" ADD CONSTRAINT "EntryExitLog_attendantId_fkey" FOREIGN KEY ("attendantId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "EntryExitLog" ADD CONSTRAINT "EntryExitLog_recordedById_fkey" FOREIGN KEY ("recordedById") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "PermitExtension" ADD CONSTRAINT "PermitExtension_permitId_fkey" FOREIGN KEY ("permitId") REFERENCES "Permit"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -248,8 +260,9 @@ ALTER TABLE "PermitExtension" ADD CONSTRAINT "PermitExtension_requesterId_fkey" 
 ALTER TABLE "PermitExtension" ADD CONSTRAINT "PermitExtension_approverId_fkey" FOREIGN KEY ("approverId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "AuditLog" ADD CONSTRAINT "AuditLog_permitId_fkey" FOREIGN KEY ("permitId") REFERENCES "Permit"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-ALTER TABLE "AuditLog" ADD CONSTRAINT "AuditLog_actorId_fkey" FOREIGN KEY ("actorId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+-- AuditLog is immutable and cannot be destroyed via cascading delete
+ALTER TABLE "AuditLog" ADD CONSTRAINT "AuditLog_permitId_fkey" FOREIGN KEY ("permitId") REFERENCES "Permit"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "AuditLog" ADD CONSTRAINT "AuditLog_actorId_fkey" FOREIGN KEY ("actorId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- PostgreSQL Trigger to enforce AuditLog immutability (append-only)
 CREATE OR REPLACE FUNCTION prevent_audit_log_modification()

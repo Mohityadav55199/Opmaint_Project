@@ -23,6 +23,8 @@ export const electricalLotoDefinition: PermitTypeDefinition<ElectricalLotoTypeDa
   description: "Required for working on or near de-energized electrical systems, switchgear, motors, transformers, or machinery requiring lock-out tag-out.",
   schema: electricalLotoSchema,
   requiredSlots: ["AREA_OWNER", "SAFETY_OFFICER"],
+  maxValidityHours: 24, // 24-hour maximum validity window
+  hasEntryExitLog: false,
   defaultPrecautions: [
     { id: "isolation_points_locked", label: "Breakers racked out / switches open and padlocks applied", mandatory: true },
     { id: "tags_posted", label: "Standard DANGER - DO NOT OPERATE tags affixed with owner contact", mandatory: true },

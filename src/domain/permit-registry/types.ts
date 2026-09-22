@@ -28,6 +28,8 @@ export interface PermitTypeDefinition<T = any> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   schema: z.ZodType<T, any, any>;
   requiredSlots: ApprovalSlot[];
+  maxValidityHours: number; // Hard upper ceiling on permit validity duration for this type
+  hasEntryExitLog?: boolean; // When true, enables person entry/exit attendant logging for this permit type
   defaultPrecautions: { id: string; label: string; mandatory?: boolean }[];
   fieldSections: {
     title: string;
@@ -36,3 +38,4 @@ export interface PermitTypeDefinition<T = any> {
   }[];
   validateBusinessRules?: (typeData: T, permitContext?: unknown) => string | null;
 }
+

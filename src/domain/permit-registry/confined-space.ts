@@ -36,6 +36,8 @@ export const confinedSpaceDefinition: PermitTypeDefinition<ConfinedSpaceTypeData
   description: "Required for entry into enclosed or partially enclosed spaces not designed for continuous human occupancy (tanks, vessels, silos, vaults, pits).",
   schema: confinedSpaceSchema,
   requiredSlots: ["AREA_OWNER", "SAFETY_OFFICER"],
+  maxValidityHours: 12, // 12-hour max validity window per shift
+  hasEntryExitLog: true, // Dedicated entry/exit log attendant required
   defaultPrecautions: [
     { id: "isolation_verified", label: "Positive mechanical and electrical isolation verified (piping blanked/disconnected, LOTO applied)", mandatory: true },
     { id: "atmospheric_test", label: "Multi-gas atmospheric test completed at all levels (top, middle, bottom)", mandatory: true },

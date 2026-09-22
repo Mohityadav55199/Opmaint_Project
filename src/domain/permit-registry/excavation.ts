@@ -27,6 +27,8 @@ export const excavationDefinition: PermitTypeDefinition<ExcavationTypeData> = {
   description: "Required for any mechanical or manual trenching, digging, or ground penetration deeper than 0.3 metres (1 foot).",
   schema: excavationSchema,
   requiredSlots: ["AREA_OWNER", "SAFETY_OFFICER"],
+  maxValidityHours: 24, // 24-hour maximum validity window
+  hasEntryExitLog: false,
   defaultPrecautions: [
     { id: "utility_clearance", label: "Underground cable, pipe, and fiber optic scans completed & clear", mandatory: true },
     { id: "spoil_pile_clearance", label: "Excavated spoil and equipment kept at least 1 metre away from trench edge", mandatory: true },

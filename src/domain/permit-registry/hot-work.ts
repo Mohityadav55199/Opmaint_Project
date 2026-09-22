@@ -31,6 +31,8 @@ export const hotWorkDefinition: PermitTypeDefinition<HotWorkTypeData> = {
   description: "Required for open flame, welding, grinding, cutting, or soldering where spark or heat hazards exist.",
   schema: hotWorkSchema,
   requiredSlots: ["AREA_OWNER", "SAFETY_OFFICER"],
+  maxValidityHours: 12, // Standard shift / 12-hour maximum validity
+  hasEntryExitLog: false,
   defaultPrecautions: [
     { id: "fire_watch", label: "Dedicated Fire Watch trained and stationed with extinguisher", mandatory: true },
     { id: "combustibles_cleared", label: "Flammables and combustibles removed or shielded within clearance radius", mandatory: true },
@@ -74,7 +76,7 @@ export const hotWorkDefinition: PermitTypeDefinition<HotWorkTypeData> = {
           type: "number",
           required: true,
           min: 5,
-          max: 50,
+          max: 100,
           defaultValue: 10,
           helpText: "Standard industrial clearance is at least 10 metres (or 35 feet).",
         },
@@ -90,7 +92,7 @@ export const hotWorkDefinition: PermitTypeDefinition<HotWorkTypeData> = {
           type: "number",
           required: true,
           min: 0,
-          max: 10,
+          max: 100,
           step: 0.1,
           helpText: "Work is prohibited if LEL exceeds 0% in hazardous zones.",
         },
@@ -99,8 +101,8 @@ export const hotWorkDefinition: PermitTypeDefinition<HotWorkTypeData> = {
           label: "Oxygen Concentration (% O2)",
           type: "number",
           required: true,
-          min: 19.5,
-          max: 23.5,
+          min: 0,
+          max: 100,
           step: 0.1,
           helpText: "Safe breathable range is 19.5% to 23.5%.",
         },
@@ -130,3 +132,4 @@ export const hotWorkDefinition: PermitTypeDefinition<HotWorkTypeData> = {
     return null;
   },
 };
+

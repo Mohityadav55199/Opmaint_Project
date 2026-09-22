@@ -28,6 +28,8 @@ export const workingAtHeightDefinition: PermitTypeDefinition<WorkingAtHeightType
   description: "Required for any maintenance, inspection, or construction work performed at an elevation of 1.8 metres (6 feet) or higher where fall hazards exist.",
   schema: workingAtHeightSchema,
   requiredSlots: ["AREA_OWNER", "SAFETY_OFFICER"],
+  maxValidityHours: 12,
+  hasEntryExitLog: false,
   defaultPrecautions: [
     { id: "harness_inspected", label: "Full body harnesses, lanyards, and snap hooks pre-use inspected and tagged", mandatory: true },
     { id: "certified_anchor", label: "Certified anchor point (rated to minimum 15 kN / 5,000 lbs) identified and verified", mandatory: true },
@@ -45,7 +47,7 @@ export const workingAtHeightDefinition: PermitTypeDefinition<WorkingAtHeightType
           type: "number",
           required: true,
           min: 1.8,
-          max: 100,
+          max: 150,
           step: 0.5,
           helpText: "Applies to elevations >= 1.8 metres (6 ft).",
         },

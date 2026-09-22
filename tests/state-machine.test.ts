@@ -25,7 +25,12 @@ function createMockPermit(overrides: Partial<PermitData> = {}): PermitData {
     expiresAt: end,
     hazards: ["FLAMMABLE_VAPOR", "HOT_SURFACES"],
     ppeRequired: ["HELMET", "SAFETY_SHOES", "WELDING_SHIELD"],
-    precautionsChecklist: { fire_watch: true, combustibles_cleared: true },
+    precautionsChecklist: {
+      fire_watch: true,
+      combustibles_cleared: true,
+      floor_covered: true,
+      gas_tested: true,
+    },
     typeData: {
       hotWorkType: "WELDING",
       fireWatchName: "Ramesh Kumar",

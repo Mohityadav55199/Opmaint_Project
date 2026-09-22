@@ -47,6 +47,7 @@ next-env.d.ts
 /.pgdata-test/
 /.embedded-pg-data/
 /.embedded-pg-test-data/
+/.embedded-pg-*-data/
 
 # assignment brief (kept out of git)
 *.pdf

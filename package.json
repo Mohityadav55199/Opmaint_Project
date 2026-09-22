@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --exclude '**/*.integration.test.ts'",
     "test:unit": "vitest run --exclude '**/*.integration.test.ts'",
-    "test:integration": "vitest run tests/postgres.integration.test.ts",
+    "test:integration": "vitest run tests/postgres.integration.test.ts && vitest run tests/auth-api.integration.test.ts",
     "test:all": "vitest run",
     "postinstall": "prisma generate",
     "db:local": "node scripts/local-db.mjs",

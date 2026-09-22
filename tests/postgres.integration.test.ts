@@ -8,7 +8,7 @@ const DB_PORT = 54328;
 const DB_NAME = "opmaint_integration_test";
 const TEST_DATABASE_URL = `postgresql://postgres:password@localhost:${DB_PORT}/${DB_NAME}?schema=public`;
 
-describe("PostgreSQL Real Database Integration & Constraints", () => {
+describe("PostgreSQL Real Database Integration & Constraints", { timeout: 30000 }, () => {
   let pgServer: EmbeddedPostgres;
   let prisma: PrismaClient;
 
@@ -19,10 +19,7 @@ describe("PostgreSQL Real Database Integration & Constraints", () => {
   let testPermitId: string;
 
   beforeAll(async () => {
-    // 0. Ensure previous process is terminated and directory is fresh
-    try {
-      execSync('powershell -Command "Get-Process -Name postgres -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"');
-    } catch {}
+    // 0. Ensure directory is fresh
 
     if (fs.existsSync(".embedded-pg-test-data")) {
       try {

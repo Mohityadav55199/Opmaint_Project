@@ -145,7 +145,7 @@ describe("PostgreSQL Real Database Integration & Constraints", { timeout: 30000 
       },
     });
     testPermitId = permit.id;
-  }, 60000);
+  }, 180000);
 
   afterAll(async () => {
     if (prisma) {

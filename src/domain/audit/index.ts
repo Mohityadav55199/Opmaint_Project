@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 
 export interface AuditEntryParams {
-  permitId: string;
+  permitId?: string | null;
   actorId?: string | null;
   actorLabel: string;
   actorRole: string;

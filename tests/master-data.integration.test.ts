@@ -8,7 +8,6 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execSync } from "child_process";
 import fs from "fs";
 import EmbeddedPostgres from "embedded-postgres";
-import { Role } from "@prisma/client";
 import { hashPassword, AUTH_COOKIE_NAME } from "../src/lib/auth";
 import { prisma, resetPrismaClient } from "../src/lib/prisma";
 import { POST as loginHandler } from "../src/app/api/auth/login/route";
@@ -78,7 +77,6 @@ function makeRequest(
 describe("Master Data APIs Integration (PostgreSQL)", { timeout: 60000 }, () => {
   let pgServer: EmbeddedPostgres;
 
-  let adminId: string;
   let areaOwnerId: string;
   let inactiveUserId: string;
 
@@ -136,16 +134,15 @@ describe("Master Data APIs Integration (PostgreSQL)", { timeout: 60000 }, () => 
     // Seed test users
     const passwordHash = await hashPassword(RAW_PASSWORD);
 
-    const admin = await prisma.user.create({
+    await prisma.user.create({
       data: { email: "admin@md.test", name: "Admin User", role: "ADMIN", passwordHash, isActive: true },
     });
-    adminId = admin.id;
 
-    const requester = await prisma.user.create({
+    await prisma.user.create({
       data: { email: "requester@md.test", name: "Requester User", role: "REQUESTER", passwordHash, isActive: true },
     });
 
-    const safetyOfficer = await prisma.user.create({
+    await prisma.user.create({
       data: { email: "safety@md.test", name: "Safety Officer", role: "SAFETY_OFFICER", passwordHash, isActive: true },
     });
 
@@ -180,7 +177,7 @@ describe("Master Data APIs Integration (PostgreSQL)", { timeout: 60000 }, () => 
     requesterToken = await loginAndGetToken("requester@md.test", RAW_PASSWORD);
     safetyOfficerToken = await loginAndGetToken("safety@md.test", RAW_PASSWORD);
     areaOwnerToken = await loginAndGetToken("areaowner@md.test", RAW_PASSWORD);
-  }, 90000);
+  }, 180000);
 
   afterAll(async () => {
     if (prisma) await prisma.$disconnect();

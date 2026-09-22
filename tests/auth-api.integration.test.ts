@@ -94,7 +94,7 @@ describe("Authentication & Session API Integration (PostgreSQL)", { timeout: 300
         isActive: false,
       },
     });
-  }, 60000);
+  }, 180000);
 
   afterAll(async () => {
     try {

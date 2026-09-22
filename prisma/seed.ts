@@ -1,4 +1,4 @@
-import { PrismaClient, Role } from "@prisma/client";
+import { PrismaClient, Role, Prisma } from "@prisma/client";
 import bcrypt from "bcryptjs";
 
 const prisma = new PrismaClient();
@@ -245,6 +245,246 @@ async function main() {
       criticality: "MEDIUM",
     },
   });
+  // ---------------------------------------------------------------
+  // 5. PERMITS (10 total: 8 DRAFT, 2 PENDING_APPROVAL, all 4 types)
+  // ---------------------------------------------------------------
+  // Check if permits are already seeded
+  const existingPermitCount = await prisma.permit.count();
+  if (existingPermitCount >= 10) {
+    console.log(`Permits already seeded (${existingPermitCount} permits found), skipping permit creation.`);
+  } else {
+    const now = new Date();
+    const oneHour = 60 * 60 * 1000;
+    let permitSeq = 1;
+
+  type PermitSeedData = {
+    type: "HOT_WORK" | "CONFINED_SPACE_ENTRY" | "WORKING_AT_HEIGHT" | "ELECTRICAL_ISOLATION_LOTO";
+    equipmentId: string;
+    contractorTeam: string;
+    workDescription: string;
+    plannedStartTime: Date;
+    plannedEndTime: Date;
+    hazards: string[];
+    ppeRequired: string[];
+    precautionsChecklist: Record<string, boolean>;
+    typeData: Record<string, unknown>;
+    status?: "DRAFT" | "PENDING_APPROVAL";
+  };
+
+  const getSeedPermitConfig = (
+    type: PermitSeedData["type"],
+    idx: number,
+    equipmentId: string,
+    status: "DRAFT" | "PENDING_APPROVAL" = "DRAFT"
+  ): PermitSeedData => {
+    const plannedStartTime = new Date(now.getTime() + (idx + 1) * 2 * oneHour);
+    const plannedEndTime = new Date(plannedStartTime.getTime() + 4 * oneHour);
+
+    switch (type) {
+      case "HOT_WORK":
+        return {
+          type,
+          equipmentId,
+          contractorTeam: "Industrial Welding Solutions Ltd",
+          workDescription: `Steam pipeline flange fabrication & TIG welding task #${idx + 1}`,
+          plannedStartTime,
+          plannedEndTime,
+          hazards: ["HOT_SURFACES", "SPARKS", "FLAMMABLE_VAPOURS"],
+          ppeRequired: ["HELMET", "SAFETY_SHOES", "WELDING_GLOVES", "EYE_PROTECTION"],
+          precautionsChecklist: {
+            fire_watch: true,
+            combustibles_cleared: true,
+            floor_covered: true,
+            gas_tested: true,
+            ventilation_adequate: true,
+          },
+          typeData: {
+            hotWorkType: "WELDING",
+            fireWatchName: "Vikram Rathore",
+            fireExtinguisherType: "CO2 4.5kg",
+            combustiblesClearedRadiusMetres: 10,
+            gasTestLelPercent: 0,
+            gasTestO2Percent: 20.9,
+            gasTestTime: new Date().toISOString(),
+            gasTesterName: "S. Swaminathan",
+          },
+          status,
+        };
+      case "CONFINED_SPACE_ENTRY":
+        return {
+          type,
+          equipmentId,
+          contractorTeam: "Apex Vessel Inspection Services",
+          workDescription: `Internal ultrasonic thickness measurement & descaling task #${idx + 1}`,
+          plannedStartTime,
+          plannedEndTime,
+          hazards: ["OXYGEN_DEFICIENCY", "TOXIC_GAS", "CONFINED_SPACE"],
+          ppeRequired: ["HELMET", "SAFETY_SHOES", "ESCAPE_BA", "MULTI_GAS_DETECTOR"],
+          precautionsChecklist: {
+            lines_isolated: true,
+            atmospheric_tested: true,
+            ventilation_active: true,
+            standby_present: true,
+            rescue_ready: true,
+          },
+          typeData: {
+            spaceId: "TK-UTL-BOIL-DEAR-01",
+            entryPoint: "Top Manway MW-01",
+            standbyAttendantName: "Ramesh Pawar",
+            rescuePlanDescription: "Tripod with retrieval winch and harness anchored outside manway",
+            ventilationMethod: "FORCED_MECHANICAL",
+            gasTestO2Percent: 20.9,
+            gasTestLelPercent: 0,
+            gasTestH2sPpm: 0,
+            gasTestCoPpm: 0,
+            gasTestTime: new Date().toISOString(),
+            gasTesterName: "S. Swaminathan",
+            communicationMethod: "Two-way intrinsically safe radio and life-line signals",
+          },
+          status,
+        };
+      case "WORKING_AT_HEIGHT":
+        return {
+          type,
+          equipmentId,
+          contractorTeam: "HighRise Industrial Riggers",
+          workDescription: `Structural overhead crane rail alignment & inspection task #${idx + 1}`,
+          plannedStartTime,
+          plannedEndTime,
+          hazards: ["FALL_FROM_HEIGHT", "FALLING_OBJECTS", "SUSPENSION_TRAUMA"],
+          ppeRequired: ["HELMET", "SAFETY_SHOES", "FULL_BODY_HARNESS", "CHIN_STRAP"],
+          precautionsChecklist: {
+            harness_inspected: true,
+            certified_anchor: true,
+            barricade_warning: true,
+            tools_tethered: true,
+          },
+          typeData: {
+            heightMetres: 8.5,
+            accessMethod: "MEWP",
+            fallArrestEquipment: "Full body harness with twin shock-absorbing lanyards",
+            anchorPointChecked: true,
+            barricadingBelow: true,
+            rescuePlanAtHeight: "MEWP manual descent valve and suspension trauma straps ready",
+            weatherCheckConfirmed: true,
+          },
+          status,
+        };
+      case "ELECTRICAL_ISOLATION_LOTO":
+        return {
+          type,
+          equipmentId,
+          contractorTeam: "ElectraCare High Voltage Ltd",
+          workDescription: `Motor feeder breaker servicing & primary contact overhaul task #${idx + 1}`,
+          plannedStartTime,
+          plannedEndTime,
+          hazards: ["ELECTROCUTION", "ARC_FLASH", "STORED_ENERGY"],
+          ppeRequired: ["HELMET", "SAFETY_SHOES", "ARC_FLASH_SHIELD", "INSULATED_GLOVES"],
+          precautionsChecklist: {
+            isolation_points_locked: true,
+            tags_posted: true,
+            zero_energy_test: true,
+            stored_energy_dissipated: true,
+          },
+          typeData: {
+            equipmentTag: "MCC-02-FEEDER-04",
+            voltageLevel: "415V",
+            isolationPointsList: ["MCC-02 Incomer 4B Breaker Racked Out"],
+            lockNumbers: ["LOTO-RED-1042"],
+            tagNumbers: ["TAG-ELEC-4091"],
+            earthingApplied: true,
+            testedDeadBy: "Dinesh Kumar (Certified Electrician)",
+            testInstrumentUsed: "Fluke 87V Calibrated Multimeter (Cal Due: Nov 2026)",
+            zeroEnergyVerified: true,
+          },
+          status,
+        };
+    }
+  };
+
+  async function createSeededPermit(config: PermitSeedData) {
+    const currentSeq = permitSeq++;
+    const permitNumber = `PTW-2026-${String(currentSeq).padStart(4, "0")}`;
+    const expiresAt = config.plannedEndTime;
+
+    // 1. Create permit with initial DRAFT_CREATED audit log
+    const created = await prisma.permit.create({
+      data: {
+        permitSequence: currentSeq,
+        permitNumber,
+        status: config.status === "PENDING_APPROVAL" ? "PENDING_APPROVAL" : "DRAFT",
+        type: config.type,
+        requesterId: requester.id,
+        contractorTeam: config.contractorTeam,
+        workDescription: config.workDescription,
+        equipmentId: config.equipmentId,
+        plannedStartTime: config.plannedStartTime,
+        plannedEndTime: config.plannedEndTime,
+        expiresAt,
+        hazards: config.hazards as Prisma.InputJsonValue,
+        ppeRequired: config.ppeRequired as Prisma.InputJsonValue,
+        precautionsChecklist: config.precautionsChecklist as Prisma.InputJsonValue,
+        typeData: config.typeData as Prisma.InputJsonValue,
+        auditLogs: {
+          create: {
+            actorId: requester.id,
+            actorLabel: requester.name,
+            actorRole: requester.role,
+            action: "DRAFT_CREATED",
+            fromValue: null,
+            toValue: "DRAFT",
+            comment: `Draft permit created by ${requester.name}`,
+          },
+        },
+      },
+    });
+
+    // 2. If PENDING_APPROVAL, record SUBMIT audit log transactionally
+    if (config.status === "PENDING_APPROVAL") {
+      await prisma.auditLog.create({
+        data: {
+          permitId: created.id,
+          actorId: requester.id,
+          actorLabel: requester.name,
+          actorRole: requester.role,
+          action: "SUBMIT",
+          fromValue: "DRAFT",
+          toValue: "PENDING_APPROVAL",
+          comment: "Permit submitted for approval",
+        },
+      });
+    }
+
+    return created;
+  }
+
+  // 8 DRAFT permits (2 of each assignment-required type)
+  const draftSpecs: Array<{ type: PermitSeedData["type"]; equipmentId: string }> = [
+    { type: "HOT_WORK", equipmentId: pressEquipment1.id },
+    { type: "HOT_WORK", equipmentId: boilerEquipment.id },
+    { type: "CONFINED_SPACE_ENTRY", equipmentId: boilerEquipment.id },
+    { type: "CONFINED_SPACE_ENTRY", equipmentId: paintEquipment.id },
+    { type: "WORKING_AT_HEIGHT", equipmentId: assemblyRobotChn.id },
+    { type: "WORKING_AT_HEIGHT", equipmentId: conveyorChn.id },
+    { type: "ELECTRICAL_ISOLATION_LOTO", equipmentId: pressEquipment2.id },
+    { type: "ELECTRICAL_ISOLATION_LOTO", equipmentId: assemblyRobotChn.id },
+  ];
+
+  for (let i = 0; i < draftSpecs.length; i++) {
+    await createSeededPermit(
+      getSeedPermitConfig(draftSpecs[i].type, i, draftSpecs[i].equipmentId, "DRAFT")
+    );
+  }
+
+  // 2 PENDING_APPROVAL permits (1 HOT_WORK, 1 WORKING_AT_HEIGHT)
+  await createSeededPermit(
+    getSeedPermitConfig("HOT_WORK", 8, pressEquipment2.id, "PENDING_APPROVAL")
+  );
+  await createSeededPermit(
+    getSeedPermitConfig("WORKING_AT_HEIGHT", 9, conveyorChn.id, "PENDING_APPROVAL")
+  );
+  }
+
 
   // ---------------------------------------------------------------
   // Summary

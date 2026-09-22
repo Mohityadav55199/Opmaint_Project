@@ -381,13 +381,39 @@ describe("RBAC and Approval Slots Engine", () => {
       expect(checkAction(activePermit, requester, "EDIT").allowed).toBe(false);
     });
 
-    it("LOG_WORK: allowed in ACTIVE and SUSPENDED status", () => {
+    it("LOG_WORK: allowed ONLY in ACTIVE status", () => {
       const activePermit = createMockPermit({ status: "ACTIVE" });
       expect(checkAction(activePermit, requester, "LOG_WORK").allowed).toBe(true);
       expect(checkAction(activePermit, safetyOfficer, "LOG_WORK").allowed).toBe(true);
+      expect(checkAction(activePermit, admin, "LOG_WORK").allowed).toBe(true);
+    });
 
-      const draftPermit = createMockPermit({ status: "DRAFT" });
-      expect(checkAction(draftPermit, requester, "LOG_WORK").allowed).toBe(false);
+    it("LOG_WORK: strictly rejected in SUSPENDED status", () => {
+      const suspendedPermit = createMockPermit({ status: "SUSPENDED" });
+      const check = checkAction(suspendedPermit, requester, "LOG_WORK");
+      expect(check.allowed).toBe(false);
+      expect(check.httpStatus).toBe(409);
+      expect(check.reason).toMatch(/Action 'LOG_WORK' is not permitted from current status 'SUSPENDED'/);
+    });
+
+    it("LOG_WORK: rejected across all non-ACTIVE statuses (DRAFT, PENDING_APPROVAL, APPROVED, SUSPENDED, CLOSED, CLOSED_VERIFIED, REJECTED, EXPIRED, CANCELLED)", () => {
+      const nonActiveStatuses = [
+        "DRAFT",
+        "PENDING_APPROVAL",
+        "APPROVED",
+        "SUSPENDED",
+        "CLOSED",
+        "CLOSED_VERIFIED",
+        "REJECTED",
+        "EXPIRED",
+        "CANCELLED",
+      ] as const;
+
+      for (const status of nonActiveStatuses) {
+        const permit = createMockPermit({ status });
+        const check = checkAction(permit, requester, "LOG_WORK");
+        expect(check.allowed).toBe(false);
+      }
     });
 
     it("LOG_ENTRY_EXIT: allowed only for permit types with hasEntryExitLog (Confined Space) and when ACTIVE", () => {

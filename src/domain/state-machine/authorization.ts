@@ -418,10 +418,10 @@ export function checkAction(
     }
 
     case "LOG_WORK": {
-      if (!["ACTIVE", "SUSPENDED"].includes(permit.status)) {
+      if (permit.status !== "ACTIVE") {
         return {
           allowed: false,
-          reason: `Work log entries are only permitted for ACTIVE or SUSPENDED permits (current: '${permit.status}').`,
+          reason: `Work cannot be logged against a permit that is not ACTIVE (current: '${permit.status}').`,
           httpStatus: 409,
         };
       }

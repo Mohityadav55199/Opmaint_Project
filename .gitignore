@@ -45,6 +45,8 @@ next-env.d.ts
 # local embedded postgres data
 /.pgdata/
 /.pgdata-test/
+/.embedded-pg-data/
+/.embedded-pg-test-data/
 
 # assignment brief (kept out of git)
 *.pdf

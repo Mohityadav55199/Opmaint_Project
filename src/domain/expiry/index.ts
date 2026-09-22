@@ -43,3 +43,16 @@ export function isExpiringSoon(
 export function canStatusExpire(status: PermitStatus): boolean {
   return ["ACTIVE", "SUSPENDED", "APPROVED", "PENDING_APPROVAL"].includes(status);
 }
+
+/**
+ * Authoritative single rule for permit expiry eligibility.
+ * A permit is eligible for system expiration ONLY when:
+ * 1. Its status is in an active/valid workflow state (ACTIVE, SUSPENDED, APPROVED, PENDING_APPROVAL)
+ * 2. Current time has reached or passed its authoritative validity boundary (now >= expiresAt).
+ */
+export function isPermitEligibleForExpiry(
+  permit: { status: PermitStatus; expiresAt: Date | string },
+  now: Date = new Date()
+): boolean {
+  return canStatusExpire(permit.status) && isPastValidity(permit, now);
+}

@@ -43,6 +43,15 @@ export interface AuthenticatedUser {
   isActive?: boolean;
 }
 
+export const SYSTEM_ACTOR_ID = "SYSTEM";
+export const SYSTEM_USER: AuthenticatedUser = {
+  id: SYSTEM_ACTOR_ID,
+  name: "System Worker",
+  email: "system@opmaint.local",
+  role: "ADMIN",
+  isActive: true,
+};
+
 export interface PlantData {
   id: string;
   code: string;

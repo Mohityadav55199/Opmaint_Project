@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { checkAction, getAvailableActions } from "../src/domain/state-machine/authorization";
 import { canUserReject } from "../src/domain/approvals/slots";
-import { AuthenticatedUser, PermitData } from "../src/domain/types";
+import { AuthenticatedUser, PermitData, SYSTEM_USER } from "../src/domain/types";
 
 function createMockPermit(overrides: Partial<PermitData> = {}): PermitData {
   const now = new Date();
@@ -173,6 +173,38 @@ describe("RBAC and Approval Slots Engine", () => {
             round: 1,
             slot: "AREA_OWNER",
             approverId: boilerAreaOwner.id,
+            decision: "APPROVED",
+            createdAt: new Date(),
+          },
+        ],
+      });
+
+      const check = checkAction(permit, requester, "ACTIVATE");
+      expect(check.allowed).toBe(false);
+      expect(check.httpStatus).toBe(422);
+      expect(check.reason).toMatch(/one or more required approver slots have not yet signed off/);
+    });
+
+    it("blocks activation when all approvals are from an old round (round isolation)", () => {
+      const permit = createMockPermit({
+        status: "APPROVED",
+        approvalRound: 2, // Current round is 2
+        approvals: [
+          {
+            id: "app_old_1",
+            permitId: "permit_test_101",
+            round: 1, // Round 1 approval
+            slot: "AREA_OWNER",
+            approverId: boilerAreaOwner.id,
+            decision: "APPROVED",
+            createdAt: new Date(),
+          },
+          {
+            id: "app_old_2",
+            permitId: "permit_test_101",
+            round: 1, // Round 1 approval
+            slot: "SAFETY_OFFICER",
+            approverId: safetyOfficer.id,
             decision: "APPROVED",
             createdAt: new Date(),
           },
@@ -381,6 +413,29 @@ describe("RBAC and Approval Slots Engine", () => {
       expect(checkAction(activePermit, requester, "EDIT").allowed).toBe(false);
     });
 
+    it("EDIT: strictly prohibited across all submitted/non-DRAFT states (PENDING_APPROVAL, APPROVED, ACTIVE, SUSPENDED, CLOSED, CLOSED_VERIFIED, REJECTED, EXPIRED, CANCELLED)", () => {
+      const nonDraftStatuses = [
+        "PENDING_APPROVAL",
+        "APPROVED",
+        "ACTIVE",
+        "SUSPENDED",
+        "CLOSED",
+        "CLOSED_VERIFIED",
+        "REJECTED",
+        "EXPIRED",
+        "CANCELLED",
+      ] as const;
+
+      for (const status of nonDraftStatuses) {
+        const permit = createMockPermit({ status });
+        const checkReq = checkAction(permit, requester, "EDIT");
+        expect(checkReq.allowed).toBe(false);
+
+        const checkAdmin = checkAction(permit, admin, "EDIT");
+        expect(checkAdmin.allowed).toBe(false);
+      }
+    });
+
     it("LOG_WORK: allowed ONLY in ACTIVE status", () => {
       const activePermit = createMockPermit({ status: "ACTIVE" });
       expect(checkAction(activePermit, requester, "LOG_WORK").allowed).toBe(true);
@@ -463,22 +518,57 @@ describe("RBAC and Approval Slots Engine", () => {
     });
   });
 
-  describe("Rule 9: EXPIRE System Transition", () => {
-    it("allows EXPIRE on non-terminal permit only when now >= expiresAt", () => {
+  describe("Rule 9: EXPIRE System-Only Transition", () => {
+    it("rejects EXPIRE when invoked by normal users (requester, safety officer, admin) with 403", () => {
       const now = new Date();
       const pastPermit = createMockPermit({
         status: "ACTIVE",
-        expiresAt: new Date(now.getTime() - 1000), // Expired 1 second ago
+        expiresAt: new Date(now.getTime() - 1000),
       });
-      expect(checkAction(pastPermit, safetyOfficer, "EXPIRE", now).allowed).toBe(true);
+
+      const checkReq = checkAction(pastPermit, requester, "EXPIRE", now);
+      expect(checkReq.allowed).toBe(false);
+      expect(checkReq.httpStatus).toBe(403);
+      expect(checkReq.reason).toMatch(/EXPIRE is an automated system transition/);
+
+      const checkSafety = checkAction(pastPermit, safetyOfficer, "EXPIRE", now);
+      expect(checkSafety.allowed).toBe(false);
+      expect(checkSafety.httpStatus).toBe(403);
+
+      const checkAdmin = checkAction(pastPermit, admin, "EXPIRE", now);
+      expect(checkAdmin.allowed).toBe(false);
+      expect(checkAdmin.httpStatus).toBe(403);
+    });
+
+    it("allows EXPIRE only by SYSTEM_USER on expirable states when now >= expiresAt", () => {
+      const now = new Date();
+      const pastPermit = createMockPermit({
+        status: "ACTIVE",
+        expiresAt: new Date(now.getTime() - 1000),
+      });
+
+      expect(checkAction(pastPermit, SYSTEM_USER, "EXPIRE", now).allowed).toBe(true);
 
       const activePermit = createMockPermit({
         status: "ACTIVE",
-        expiresAt: new Date(now.getTime() + 1000 * 60 * 60), // Valid for 1 more hour
+        expiresAt: new Date(now.getTime() + 1000 * 60 * 60),
       });
-      const checkNotExpired = checkAction(activePermit, safetyOfficer, "EXPIRE", now);
+      const checkNotExpired = checkAction(activePermit, SYSTEM_USER, "EXPIRE", now);
       expect(checkNotExpired.allowed).toBe(false);
       expect(checkNotExpired.httpStatus).toBe(422);
+    });
+
+    it("verifies EXPIRE is NEVER included in getAvailableActions()", () => {
+      const now = new Date();
+      const expiredPermit = createMockPermit({
+        status: "ACTIVE",
+        expiresAt: new Date(now.getTime() - 1000),
+      });
+
+      // Never returned for requester, safety officer, or admin
+      expect(getAvailableActions(expiredPermit, requester, now)).not.toContain("EXPIRE");
+      expect(getAvailableActions(expiredPermit, safetyOfficer, now)).not.toContain("EXPIRE");
+      expect(getAvailableActions(expiredPermit, admin, now)).not.toContain("EXPIRE");
     });
   });
 

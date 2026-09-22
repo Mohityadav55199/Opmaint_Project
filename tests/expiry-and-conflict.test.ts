@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { isPastValidity, isExpiringSoon } from "../src/domain/expiry";
+import { isPastValidity, isExpiringSoon, canStatusExpire, isPermitEligibleForExpiry } from "../src/domain/expiry";
 import { detectPermitConflicts } from "../src/domain/conflicts";
+import { checkAction, getAvailableActions } from "../src/domain/state-machine/authorization";
+import { getNextStatus } from "../src/domain/state-machine/engine";
+import { AuthenticatedUser, PermitData, SYSTEM_USER } from "../src/domain/types";
 
 describe("Expiry Semantics and Conflict Detection", () => {
   describe("Authoritative Validity Boundary (expiresAt)", () => {
@@ -93,6 +96,183 @@ describe("Expiry Semantics and Conflict Detection", () => {
 
       const warnings = detectPermitConflicts(candidate, [nonOverlapping]);
       expect(warnings.length).toBe(0);
+    });
+  });
+
+  describe("Authoritative Expiry Eligibility & System Execution", () => {
+    const requester: AuthenticatedUser = {
+      id: "user_req_1",
+      name: "Ravi Requester",
+      email: "ravi@opmaint.local",
+      role: "REQUESTER",
+    };
+
+    const safetyOfficer: AuthenticatedUser = {
+      id: "user_safety_1",
+      name: "Safety Officer",
+      email: "safety@opmaint.local",
+      role: "SAFETY_OFFICER",
+    };
+
+    function createMockPermit(status: PermitData["status"], expiresAt: Date): PermitData {
+      const now = new Date();
+      return {
+        id: "permit_exp_1",
+        permitSequence: 1,
+        permitNumber: "PTW-2026-EXP1",
+        status,
+        type: "HOT_WORK",
+        requesterId: requester.id,
+        contractorTeam: "Welding Crew",
+        workDescription: "Header pipe repair",
+        equipmentId: "equip_101",
+        plannedStartTime: new Date(expiresAt.getTime() - 1000 * 60 * 60 * 4),
+        plannedEndTime: expiresAt,
+        expiresAt,
+        hazards: ["HOT_SURFACES"],
+        ppeRequired: ["HELMET"],
+        precautionsChecklist: { fire_watch: true },
+        typeData: {},
+        approvalRound: 1,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+        area: {
+          id: "area_1",
+          plantId: "plant_1",
+          code: "A1",
+          name: "Area 1",
+          ownerId: "user_ao_1",
+        },
+        approvals: [],
+      };
+    }
+
+    it("rule 1: authoritative canStatusExpire agrees across all states", () => {
+      // Expirable states
+      expect(canStatusExpire("ACTIVE")).toBe(true);
+      expect(canStatusExpire("SUSPENDED")).toBe(true);
+      expect(canStatusExpire("APPROVED")).toBe(true);
+      expect(canStatusExpire("PENDING_APPROVAL")).toBe(true);
+
+      // Non-expirable states
+      expect(canStatusExpire("DRAFT")).toBe(false);
+      expect(canStatusExpire("REJECTED")).toBe(false);
+      expect(canStatusExpire("EXPIRED")).toBe(false);
+      expect(canStatusExpire("CLOSED")).toBe(false);
+      expect(canStatusExpire("CLOSED_VERIFIED")).toBe(false);
+      expect(canStatusExpire("CANCELLED")).toBe(false);
+    });
+
+    it("rule 2: isPermitEligibleForExpiry requires both expirable status and now >= expiresAt", () => {
+      const now = new Date("2026-09-22T14:00:00.000Z");
+      const past = new Date("2026-09-22T13:00:00.000Z");
+      const future = new Date("2026-09-22T15:00:00.000Z");
+
+      // ACTIVE in past -> eligible
+      expect(isPermitEligibleForExpiry({ status: "ACTIVE", expiresAt: past }, now)).toBe(true);
+      // ACTIVE in future -> NOT eligible
+      expect(isPermitEligibleForExpiry({ status: "ACTIVE", expiresAt: future }, now)).toBe(false);
+      // DRAFT in past -> NOT eligible (DRAFT cannot expire)
+      expect(isPermitEligibleForExpiry({ status: "DRAFT", expiresAt: past }, now)).toBe(false);
+      // CLOSED in past -> NOT eligible
+      expect(isPermitEligibleForExpiry({ status: "CLOSED", expiresAt: past }, now)).toBe(false);
+    });
+
+    it("rule 3: normal users are rejected from invoking EXPIRE (403)", () => {
+      const now = new Date();
+      const past = new Date(now.getTime() - 1000);
+      const permit = createMockPermit("ACTIVE", past);
+
+      const reqCheck = checkAction(permit, requester, "EXPIRE", now);
+      expect(reqCheck.allowed).toBe(false);
+      expect(reqCheck.httpStatus).toBe(403);
+      expect(reqCheck.reason).toMatch(/EXPIRE is an automated system transition/);
+
+      const safetyCheck = checkAction(permit, safetyOfficer, "EXPIRE", now);
+      expect(safetyCheck.allowed).toBe(false);
+      expect(safetyCheck.httpStatus).toBe(403);
+    });
+
+    it("rule 4: SYSTEM_USER can expire expirable states when past validity", () => {
+      const now = new Date();
+      const past = new Date(now.getTime() - 1000);
+
+      for (const status of ["ACTIVE", "SUSPENDED", "APPROVED", "PENDING_APPROVAL"] as const) {
+        const permit = createMockPermit(status, past);
+        const check = checkAction(permit, SYSTEM_USER, "EXPIRE", now);
+        expect(check.allowed).toBe(true);
+        expect(getNextStatus(status, "EXPIRE")).toBe("EXPIRED");
+      }
+    });
+
+    it("rule 5: SYSTEM_USER cannot expire DRAFT or terminal states", () => {
+      const now = new Date();
+      const past = new Date(now.getTime() - 1000);
+
+      // DRAFT
+      const draftPermit = createMockPermit("DRAFT", past);
+      const draftCheck = checkAction(draftPermit, SYSTEM_USER, "EXPIRE", now);
+      expect(draftCheck.allowed).toBe(false);
+      expect(() => getNextStatus("DRAFT", "EXPIRE")).toThrow();
+
+      // Terminal states
+      for (const status of ["REJECTED", "CLOSED_VERIFIED", "CANCELLED"] as const) {
+        const permit = createMockPermit(status, past);
+        const check = checkAction(permit, SYSTEM_USER, "EXPIRE", now);
+        expect(check.allowed).toBe(false);
+      }
+    });
+
+    it("rule 6: EXPIRE is idempotent for already EXPIRED permits", () => {
+      const now = new Date();
+      const past = new Date(now.getTime() - 1000);
+      const expiredPermit = createMockPermit("EXPIRED", past);
+
+      const check = checkAction(expiredPermit, SYSTEM_USER, "EXPIRE", now);
+      expect(check.allowed).toBe(true);
+      expect(check.httpStatus).toBe(200);
+      expect(getNextStatus("EXPIRED", "EXPIRE")).toBe("EXPIRED");
+    });
+
+    it("rule 7: EXPIRE is never presented in getAvailableActions()", () => {
+      const now = new Date();
+      const past = new Date(now.getTime() - 1000);
+
+      for (const status of ["DRAFT", "PENDING_APPROVAL", "APPROVED", "ACTIVE", "SUSPENDED", "CLOSED"] as const) {
+        const permit = createMockPermit(status, past);
+        expect(getAvailableActions(permit, requester, now)).not.toContain("EXPIRE");
+        expect(getAvailableActions(permit, safetyOfficer, now)).not.toContain("EXPIRE");
+      }
+    });
+
+    it("rule 8: RESUME is refused after expiry on SUSPENDED permits", () => {
+      const now = new Date("2026-09-22T15:00:00.000Z");
+      const expiredTime = new Date("2026-09-22T14:00:00.000Z");
+      const suspendedPermit = createMockPermit("SUSPENDED", expiredTime);
+
+      const resumeCheck = checkAction(suspendedPermit, safetyOfficer, "RESUME", now);
+      expect(resumeCheck.allowed).toBe(false);
+      expect(resumeCheck.httpStatus).toBe(422);
+      expect(resumeCheck.reason).toMatch(/Suspended permit cannot be resumed: validity window has expired/);
+    });
+
+    it("rule 9: exact boundary validation for expiry", () => {
+      const boundary = new Date("2026-09-22T12:00:00.000Z");
+      const permit = createMockPermit("ACTIVE", boundary);
+
+      // 1ms before boundary -> not allowed to expire
+      const beforeCheck = checkAction(permit, SYSTEM_USER, "EXPIRE", new Date(boundary.getTime() - 1));
+      expect(beforeCheck.allowed).toBe(false);
+      expect(beforeCheck.httpStatus).toBe(422);
+
+      // Exactly at boundary -> allowed
+      const exactCheck = checkAction(permit, SYSTEM_USER, "EXPIRE", boundary);
+      expect(exactCheck.allowed).toBe(true);
+
+      // 1ms after boundary -> allowed
+      const afterCheck = checkAction(permit, SYSTEM_USER, "EXPIRE", new Date(boundary.getTime() + 1));
+      expect(afterCheck.allowed).toBe(true);
     });
   });
 });

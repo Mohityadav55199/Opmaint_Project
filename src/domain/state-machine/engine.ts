@@ -57,7 +57,8 @@ export function getNextStatus(
       break;
 
     case "EXPIRE":
-      if (["DRAFT", "PENDING_APPROVAL", "APPROVED", "ACTIVE", "SUSPENDED"].includes(currentStatus)) {
+      if (currentStatus === "EXPIRED") return "EXPIRED";
+      if (["PENDING_APPROVAL", "APPROVED", "ACTIVE", "SUSPENDED"].includes(currentStatus)) {
         return "EXPIRED";
       }
       break;

@@ -1,7 +1,7 @@
-import { ApprovalSlot, AuthenticatedUser, PermitAction, PermitData } from "../types";
+import { ApprovalSlot, AuthenticatedUser, PermitAction, PermitData, SYSTEM_ACTOR_ID } from "../types";
 import { isValidTransition, isTerminalState } from "./states";
 import { canUserSatisfySlot, canUserReject, evaluateApprovalSlots, getRequiredSlots } from "../approvals/slots";
-import { isPastValidity } from "../expiry";
+import { isPastValidity, canStatusExpire } from "../expiry";
 import { getPermitType, validatePermitTypeData } from "../permit-registry";
 
 export interface ActionCheckResult {
@@ -95,12 +95,15 @@ export function checkAction(
         };
       }
 
-      // Timing check 3: expiresAt must be consistent with plannedEndTime
+      // Timing check 3: Prior to activation, expiresAt MUST equal plannedEndTime
       const expiresTime = new Date(permit.expiresAt).getTime();
-      if (expiresTime < endTime) {
+      if (isNaN(expiresTime)) {
+        return { allowed: false, reason: "Invalid expiresAt specified.", httpStatus: 422 };
+      }
+      if (expiresTime !== endTime) {
         return {
           allowed: false,
-          reason: "Authoritative expiresAt cannot be earlier than plannedEndTime.",
+          reason: `Authoritative expiresAt (${new Date(permit.expiresAt).toISOString()}) must exactly equal plannedEndTime (${new Date(permit.plannedEndTime).toISOString()}) prior to activation.`,
           httpStatus: 422,
         };
       }
@@ -547,11 +550,24 @@ export function checkAction(
     }
 
     case "EXPIRE": {
-      // System transition: can expire any non-terminal permit whose validity window has passed
-      if (isTerminalState(permit.status)) {
+      // EXPIRE is an automated system transition and cannot be invoked by normal users
+      if (user.id !== SYSTEM_ACTOR_ID) {
         return {
           allowed: false,
-          reason: `Permit is already in terminal state '${permit.status}'.`,
+          reason: "EXPIRE is an automated system transition and cannot be invoked by users.",
+          httpStatus: 403,
+        };
+      }
+
+      // Idempotency: if already EXPIRED, accept idempotently
+      if (permit.status === "EXPIRED") {
+        return { allowed: true, httpStatus: 200 };
+      }
+
+      if (!canStatusExpire(permit.status)) {
+        return {
+          allowed: false,
+          reason: `Permit in status '${permit.status}' is not eligible for expiration.`,
           httpStatus: 409,
         };
       }
@@ -559,7 +575,7 @@ export function checkAction(
       if (!isPastValidity(permit, now)) {
         return {
           allowed: false,
-          reason: "Permit validity window has not yet expired (now < expiresAt).",
+          reason: "Permit validity window has not yet passed (now < expiresAt).",
           httpStatus: 422,
         };
       }
@@ -575,6 +591,7 @@ export function checkAction(
 /**
  * Returns all actions available to the current user on the given permit.
  * Drives UI button visibility and permissions dynamically.
+ * Note: EXPIRE is an automated system-level transition and is NEVER returned as a user action.
  */
 export function getAvailableActions(
   permit: PermitData,
@@ -597,7 +614,6 @@ export function getAvailableActions(
     "REQUEST_EXTENSION",
     "APPROVE_EXTENSION",
     "REJECT_EXTENSION",
-    "EXPIRE",
   ];
 
   return actions.filter((action) => checkAction(permit, user, action, now).allowed);

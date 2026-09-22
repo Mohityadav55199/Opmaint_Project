@@ -23,7 +23,15 @@ export const confinedSpaceSchema = z.object({
   gasTestCoPpm: z
     .number({ message: "CO ppm is required" })
     .min(0, "CO ppm cannot be negative"),
-  gasTestTime: z.string().min(1, "Atmospheric test time is required"),
+  gasTestTime: z
+    .string()
+    .min(1, "Atmospheric test time is required")
+    .refine((val) => !isNaN(new Date(val).getTime()), {
+      message: "Atmospheric test timestamp must be a valid datetime string",
+    })
+    .refine((val) => new Date(val).getTime() <= Date.now() + 60000, {
+      message: "Atmospheric test timestamp cannot be in the future",
+    }),
   gasTesterName: z.string().trim().min(2, "Atmospheric tester name is required"),
   communicationMethod: z.string().trim().min(2, "Communication method between attendant and entrants is required"),
 });

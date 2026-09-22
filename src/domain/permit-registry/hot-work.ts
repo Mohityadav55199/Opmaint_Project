@@ -19,7 +19,15 @@ export const hotWorkSchema = z.object({
     .number({ message: "O2 percentage is required" })
     .min(0, "O2 % cannot be negative")
     .max(100, "O2 % cannot exceed 100%"),
-  gasTestTime: z.string().min(1, "Gas test timestamp is required"),
+  gasTestTime: z
+    .string()
+    .min(1, "Gas test timestamp is required")
+    .refine((val) => !isNaN(new Date(val).getTime()), {
+      message: "Gas test timestamp must be a valid datetime string",
+    })
+    .refine((val) => new Date(val).getTime() <= Date.now() + 60000, {
+      message: "Gas test timestamp cannot be in the future",
+    }),
   gasTesterName: z.string().trim().min(2, "Gas tester name is required"),
 });
 

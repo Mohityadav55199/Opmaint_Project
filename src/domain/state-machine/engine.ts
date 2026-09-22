@@ -1,10 +1,20 @@
 import { PermitAction, PermitStatus } from "../types";
+import { isValidTransition, isStateTransition } from "./states";
 
 export function getNextStatus(
   currentStatus: PermitStatus,
   action: PermitAction,
   options?: { allApprovalsComplete?: boolean }
 ): PermitStatus {
+  if (!isValidTransition(currentStatus, action)) {
+    throw new Error(`Illegal transition: cannot perform action '${action}' from status '${currentStatus}'`);
+  }
+
+  // Non-transitioning domain actions preserve the current status
+  if (!isStateTransition(action)) {
+    return currentStatus;
+  }
+
   switch (action) {
     case "SUBMIT":
       if (currentStatus === "DRAFT") return "PENDING_APPROVAL";
@@ -45,6 +55,12 @@ export function getNextStatus(
         return "CANCELLED";
       }
       break;
+
+    case "EXPIRE":
+      if (["DRAFT", "PENDING_APPROVAL", "APPROVED", "ACTIVE", "SUSPENDED"].includes(currentStatus)) {
+        return "EXPIRED";
+      }
+      break;
   }
 
   throw new Error(`Illegal transition: cannot perform action '${action}' from status '${currentStatus}'`);
@@ -52,3 +68,4 @@ export function getNextStatus(
 
 export * from "./states";
 export * from "./authorization";
+export * from "./payloads";

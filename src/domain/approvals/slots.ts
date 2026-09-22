@@ -65,7 +65,7 @@ export function canUserSatisfySlot(
 
   if (slot === "AREA_OWNER") {
     // Area Owner must match the equipment's derived area ownerId
-    const areaOwnerId = permit.area?.ownerId;
+    const areaOwnerId = permit.equipment?.area?.ownerId || permit.area?.ownerId;
     if (!areaOwnerId) {
       return {
         eligible: false,
@@ -96,6 +96,70 @@ export function canUserSatisfySlot(
 
   return { eligible: false, reason: `Unknown approval slot: ${slot}` };
 }
+
+/**
+ * Checks whether a user may reject a permit.
+ * Rejection Semantics:
+ * - Must be PENDING_APPROVAL
+ * - Requester cannot reject (must use Cancel instead)
+ * - User must be eligible to fill a required approval slot that is currently UNFILLED in this round
+ * - User must not have already approved another slot in this round
+ * - User cannot reject through an already-approved slot
+ */
+export function canUserReject(
+  user: AuthenticatedUser,
+  permit: PermitData
+): { eligible: boolean; reason?: string; eligibleSlots?: ApprovalSlot[] } {
+  if (permit.status !== "PENDING_APPROVAL") {
+    return {
+      eligible: false,
+      reason: `Rejection is only permitted for permits in 'PENDING_APPROVAL' status (current: '${permit.status}').`,
+    };
+  }
+
+  // Requester cannot reject
+  if (permit.requesterId === user.id) {
+    return {
+      eligible: false,
+      reason: "Requesters cannot reject permits (use Cancel instead).",
+    };
+  }
+
+  const requiredSlots = getRequiredSlots(permit.type);
+  const roundStatus = evaluateApprovalSlots(permit);
+
+  // If already rejected in this round
+  if (roundStatus.hasRejection) {
+    return {
+      eligible: false,
+      reason: "This permit round has already been rejected.",
+    };
+  }
+
+  // Find unfilled required slots this user can satisfy
+  const eligibleSlots: ApprovalSlot[] = [];
+  for (const slot of requiredSlots) {
+    if (!roundStatus.slots[slot]?.isFilled) {
+      const check = canUserSatisfySlot(slot, user, permit);
+      if (check.eligible) {
+        eligibleSlots.push(slot);
+      }
+    }
+  }
+
+  if (eligibleSlots.length === 0) {
+    return {
+      eligible: false,
+      reason:
+        user.role === "AREA_OWNER"
+          ? "You can only reject permits for equipment in your assigned area, or your slot is already filled."
+          : "You do not hold an eligible, unfilled approval slot to reject this permit.",
+    };
+  }
+
+  return { eligible: true, eligibleSlots };
+}
+
 
 /**
  * Evaluates the completion of all required approval slots for the current round.

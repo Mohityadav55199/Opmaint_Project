@@ -2,9 +2,20 @@ import { SignJWT, jwtVerify } from "jose";
 import bcrypt from "bcryptjs";
 import { AuthenticatedUser, Role } from "../domain/types";
 import { prisma } from "./prisma";
+import { UnauthorizedError } from "./errors";
 
 const PUBLIC_EXAMPLE_SECRET = "opmaint-ptw-super-secret-jwt-key-for-signing-tokens-min-32-chars";
 const TEST_JWT_SECRET = "test-only-jwt-secret-key-for-vitest-32-chars-long";
+
+export const AUTH_COOKIE_NAME = "opmaint_token";
+
+export const AUTH_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax" as const,
+  path: "/",
+  maxAge: 8 * 60 * 60, // 8 hours in seconds
+};
 
 /**
  * Resolves the JWT secret safely.
@@ -46,18 +57,17 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 
 /**
  * Signs a JWT for a user session (8-hour expiration).
+ * Contains ONLY minimal required identity information (sub = userId).
+ * Role is NOT stored as a trusted authorization value.
  */
 export async function signToken(
-  user: { id: string; name?: string; email?: string; role?: Role },
+  user: { id: string; [key: string]: unknown },
   customSecret?: string
 ): Promise<string> {
   const secretKey = getJwtSecret(customSecret);
 
   return new SignJWT({
     sub: user.id,
-    name: user.name,
-    email: user.email,
-    role: user.role,
   })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
@@ -134,4 +144,79 @@ export async function getAuthenticatedUser(
     role: user.role,
     isActive: user.isActive,
   };
+}
+
+/**
+ * Parses HTTP Cookie header into key-value map.
+ */
+export function parseCookies(cookieHeader: string | null): Record<string, string> {
+  if (!cookieHeader) return {};
+  const cookies: Record<string, string> = {};
+  const pairs = cookieHeader.split(";");
+  for (const pair of pairs) {
+    const [rawKey, ...valParts] = pair.trim().split("=");
+    if (rawKey) {
+      cookies[rawKey] = decodeURIComponent(valParts.join("="));
+    }
+  }
+  return cookies;
+}
+
+/**
+ * Extracts JWT token from incoming HTTP Request.
+ * Prioritizes HTTP-only auth cookie, with Authorization: Bearer header fallback.
+ */
+export function extractTokenFromRequest(request: Request): string | null {
+  // 1. Check Cookie header
+  const cookieHeader = request.headers.get("cookie");
+  const cookies = parseCookies(cookieHeader);
+  if (cookies[AUTH_COOKIE_NAME]) {
+    return cookies[AUTH_COOKIE_NAME];
+  }
+
+  // 2. Check NextRequest.cookies if available
+  const nextReq = request as { cookies?: { get?: (name: string) => { value?: string } | undefined } };
+  const cookieObj = nextReq.cookies?.get?.(AUTH_COOKIE_NAME);
+  if (cookieObj?.value) {
+    return cookieObj.value;
+  }
+
+  // 3. Fallback: Authorization Bearer header
+  const authHeader = request.headers.get("authorization");
+  if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
+    return authHeader.slice(7).trim();
+  }
+
+  return null;
+}
+
+/**
+ * Authenticates an incoming HTTP request and returns the authoritative user from PostgreSQL.
+ */
+export async function getAuthenticatedUserFromRequest(
+  request: Request,
+  customLoader?: UserDbLoader,
+  customSecret?: string
+): Promise<AuthenticatedUser | null> {
+  const token = extractTokenFromRequest(request);
+  if (!token) {
+    return null;
+  }
+  return getAuthenticatedUser(token, customLoader, customSecret);
+}
+
+/**
+ * Requires an authenticated user for the incoming HTTP request.
+ * Throws UnauthorizedError if token is missing, invalid, expired, or user is inactive.
+ */
+export async function requireAuthenticatedUser(
+  request: Request,
+  customLoader?: UserDbLoader,
+  customSecret?: string
+): Promise<AuthenticatedUser> {
+  const user = await getAuthenticatedUserFromRequest(request, customLoader, customSecret);
+  if (!user) {
+    throw new UnauthorizedError("Authentication required. Please log in.");
+  }
+  return user;
 }

@@ -20,8 +20,13 @@ This document records the architectural and business decisions made for the Opma
   - `plannedEndTime`: Originally requested/planned end of work.
   - `expiresAt`: **Authoritative current permit validity boundary**.
   - All operations — activation, resume, lazy expiry, extension validation, and conflict checking — use `expiresAt` as the single source of truth.
-  - `expiresAt` is initialized to `plannedEndTime` on permit creation and updated transactionally when a `PermitExtension` is approved.
-  - Expiry is enforced across all non-terminal states (`DRAFT`, `PENDING_APPROVAL`, `APPROVED`, `ACTIVE`, `SUSPENDED`). When `now >= expiresAt`, the permit cannot be approved, activated, or resumed, and transitions to `EXPIRED`.
+  - **Pre-Activation Boundary**: Prior to activation, `expiresAt` **MUST exactly equal `plannedEndTime`**. The client cannot provide a later `expiresAt` to bypass `maxValidityHours`.
+  - `expiresAt` is updated transactionally only when a `PermitExtension` is formally approved.
+  - **Expiry Eligibility**: Expiry applies exclusively to workflow states: `PENDING_APPROVAL`, `APPROVED`, `ACTIVE`, and `SUSPENDED`. `DRAFT` permits cannot expire as work has not been authorized.
+  - **System-Only Execution**: `EXPIRE` is an automated system transition executed by the system scheduler (`actorId: "SYSTEM"`). Normal users cannot invoke `EXPIRE` (HTTP 403), and `EXPIRE` is never presented in `getAvailableActions()`.
+  - Expiry is idempotent.
+  - When `now >= expiresAt`, `RESUME` is strictly refused for suspended permits.
+  - Atmospheric/gas test timestamps (`gasTestTime`) must be valid datetime strings and cannot be in the future.
 
 ---
 
@@ -36,13 +41,21 @@ This document records the architectural and business decisions made for the Opma
 
 ---
 
-### 4. Post-Submission Edits & Safety-Critical Fields
+### 4. Post-Submission Edits & Safety Integrity
 - **Decision**:
+  - **Post-submission edits are strictly prohibited.**
   - `EDIT` is only permitted while the permit is in `DRAFT` status by the requester or Admin.
-  - Once submitted (`PENDING_APPROVAL`, `APPROVED`, `ACTIVE`), core safety fields cannot be silently updated.
-  - **Safety-Critical Fields**: `equipmentId`, `plannedStartTime`, `plannedEndTime`, `expiresAt`, `hazards`, `ppeRequired`, `precautionsChecklist`, and `typeData`.
-  - If a submitted or approved permit requires safety modifications, it must be recalled/cancelled and re-submitted, or increment `approvalRound` to completely reset approvals.
-  - Every change to a permit records an immutable row in `AuditLog` capturing `actorId`, `actorRole`, `action`, `field`, `fromValue`, and `toValue`.
+  - Once submitted, permits in `PENDING_APPROVAL`, `APPROVED`, `ACTIVE`, `SUSPENDED`, `CLOSED`, `CLOSED_VERIFIED`, `REJECTED`, `EXPIRED`, and `CANCELLED` cannot be modified via field edits.
+  - If a submitted or approved permit requires scope or safety changes, it must be cancelled and a new permit created with revised parameters.
+  - **Assignment Requirement Clarification**: The assignment mentions auditing "every field edit after submission". Because this implementation deliberately prohibits all post-submission field edits to protect safety integrity, there are zero post-submission field edits to audit. All state changes, extensions, and lifecycle actions are executed via dedicated domain operations and recorded immutably in `AuditLog`.
+  - `approvalRound` is preserved in the schema for multi-round approval tracking and future extensions, without an ad-hoc approval reset edit workflow.
+
+---
+
+### 4b. Work Logging Status Rule
+- **Decision**:
+  - In strict compliance with the assignment rule (*"Work cannot be logged against a permit that isn't ACTIVE"*), `LOG_WORK` is permitted **only** when `Permit.status === "ACTIVE"`.
+  - Work logging is rejected in `SUSPENDED` and all other states.
 
 ---
 

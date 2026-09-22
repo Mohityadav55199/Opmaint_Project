@@ -23,8 +23,16 @@ describe("Authentication & Session API Integration (PostgreSQL)", { timeout: 300
   const rawPassword = "CorrectPassword123!";
 
   beforeAll(async () => {
-    // 0. Cleanup previous instance on port 54329 if any
-    if (fs.existsSync(".embedded-pg-auth-data")) {
+    // 0. Kill any lingering process listening on DB_PORT
+    try {
+      execSync(
+        `powershell -Command "Get-NetTCPConnection -LocalPort ${DB_PORT} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`,
+        { stdio: "ignore" }
+      );
+    } catch {}
+
+    const isAlreadyInitialized = fs.existsSync(".embedded-pg-auth-data/PG_VERSION");
+    if (!isAlreadyInitialized && fs.existsSync(".embedded-pg-auth-data")) {
       try {
         fs.rmSync(".embedded-pg-auth-data", { recursive: true, force: true });
       } catch {}
@@ -36,10 +44,19 @@ describe("Authentication & Session API Integration (PostgreSQL)", { timeout: 300
       databaseDir: ".embedded-pg-auth-data",
       user: "postgres",
       password: "password",
+      persistent: true,
+      onLog: () => {},
+      onError: () => {},
     });
 
-    await pgServer.initialise();
+    if (!fs.existsSync(".embedded-pg-auth-data/PG_VERSION")) {
+      await pgServer.initialise();
+    }
     await pgServer.start();
+
+    try {
+      await pgServer.dropDatabase(DB_NAME);
+    } catch {}
     await pgServer.createDatabase(DB_NAME);
 
     // 2. Set DATABASE_URL, reset Prisma cache, and run Prisma migration

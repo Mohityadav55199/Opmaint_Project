@@ -19,26 +19,41 @@ describe("PostgreSQL Real Database Integration & Constraints", { timeout: 30000 
   let testPermitId: string;
 
   beforeAll(async () => {
-    // 0. Ensure directory is fresh
+    // 0. Kill any lingering process listening on DB_PORT
+    try {
+      execSync(
+        `powershell -Command "Get-NetTCPConnection -LocalPort ${DB_PORT} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`,
+        { stdio: "ignore" }
+      );
+    } catch {}
 
-    if (fs.existsSync(".embedded-pg-test-data")) {
+    const isAlreadyInitialized = fs.existsSync(".embedded-pg-test-data/PG_VERSION");
+    if (!isAlreadyInitialized && fs.existsSync(".embedded-pg-test-data")) {
       try {
         fs.rmSync(".embedded-pg-test-data", { recursive: true, force: true });
       } catch {}
     }
 
-    // 1. Initialize and start real PostgreSQL 18.4 engine on Windows
+    // 1. Initialize and start real PostgreSQL engine
     pgServer = new EmbeddedPostgres({
       port: DB_PORT,
       databaseDir: ".embedded-pg-test-data",
       user: "postgres",
       password: "password",
+      persistent: true,
+      onLog: () => {},
+      onError: () => {},
     });
 
-    await pgServer.initialise();
+    if (!fs.existsSync(".embedded-pg-test-data/PG_VERSION")) {
+      await pgServer.initialise();
+    }
     await pgServer.start();
 
-    // Create the test database
+    // Ensure clean database for test run (drop if exists from previous run)
+    try {
+      await pgServer.dropDatabase(DB_NAME);
+    } catch {}
     await pgServer.createDatabase(DB_NAME);
 
     // 2. Set environment and apply migrations using real Prisma migrate deploy
@@ -143,14 +158,18 @@ describe("PostgreSQL Real Database Integration & Constraints", { timeout: 30000 
     }
   }, 30000);
 
-  it("applies migration cleanly with zero drift reported by prisma migrate status", () => {
-    const statusOutput = execSync("npx prisma migrate status", {
-      env: { ...process.env, DATABASE_URL: TEST_DATABASE_URL },
-      encoding: "utf-8",
-    });
+  it(
+    "applies migration cleanly with zero drift reported by prisma migrate status",
+    () => {
+      const statusOutput = execSync("npx prisma migrate status", {
+        env: { ...process.env, DATABASE_URL: TEST_DATABASE_URL },
+        encoding: "utf-8",
+      });
 
-    expect(statusOutput).toMatch(/Database schema is up to date/);
-  });
+      expect(statusOutput).toMatch(/Database schema is up to date/);
+    },
+    30000
+  );
 
   describe("AuditLog Immutability Trigger (Real PostgreSQL PL/pgSQL Trigger)", () => {
     it("strictly blocks UPDATE operations on AuditLog table via trigger", async () => {

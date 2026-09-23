@@ -12,11 +12,12 @@ An enterprise-grade, full-stack **Permit-to-Work (PTW)** management platform for
 4. [Role-Based Authorization](#4-role-based-authorization)
 5. [Approval Slot Mechanics](#5-approval-slot-mechanics)
 6. [Installation & Local Development](#6-installation--local-development)
-7. [Demo Accounts](#7-demo-accounts)
+7. [Demo Accounts & Seeded Data](#7-demo-accounts--seeded-data)
 8. [API Reference](#8-api-reference)
-9. [Testing](#9-testing)
+9. [Testing & Quality Assurance](#9-testing--quality-assurance)
 10. [End-to-End Workflow Walkthrough](#10-end-to-end-workflow-walkthrough)
-11. [AI Usage Disclosure](#11-ai-usage-disclosure)
+11. [Production Deployment](#11-production-deployment)
+12. [AI Usage Disclosure](#12-ai-usage-disclosure)
 
 ---
 
@@ -210,30 +211,55 @@ The app will be available at `http://localhost:3000`.
 
 ---
 
-## 7. Demo Accounts
+## 7. Demo Accounts & Seeded Data
 
-All demo accounts use the password: **`password123`**
+All demo accounts are seeded with the password: **`password123`**
 
-| Email                          | Name                            | Role             | Notes                                      |
-|--------------------------------|---------------------------------|------------------|--------------------------------------------|
-| `admin@opmaint.local`          | Rajesh Kumar (Plant Head)       | `ADMIN`          | Full system access                         |
-| `safety.officer@opmaint.local` | Priya Sharma (Safety Officer)   | `SAFETY_OFFICER` | Can approve, activate, suspend, verify     |
-| `ao.press@opmaint.local`       | Venkat Iyer (Press Shop Owner)  | `AREA_OWNER`     | Owns the Press Shop area                   |
-| `ao.weld@opmaint.local`        | Lakshmi Nair (Weld Bay Owner)   | `AREA_OWNER`     | Owns the Weld Bay and Paint Booth areas    |
-| `requester@opmaint.local`      | Sunil Verma (Maintenance Lead)  | `REQUESTER`      | Creates and manages own permits            |
+### Demo Users
 
-### Demo Plant & Area Structure
+| Email                          | Name                                       | Role             | Permissions & Scope                                                |
+|--------------------------------|--------------------------------------------|------------------|--------------------------------------------------------------------|
+| `admin@opmaint.local`          | Rajesh Kumar (Plant Head / Admin)          | `ADMIN`          | Full system administrative access, all plants/equipment            |
+| `safety.officer@opmaint.local` | Priya Sharma (Chief Safety Officer)        | `SAFETY_OFFICER` | Safety approvals, permit activation, suspension, closure verification |
+| `ao.press@opmaint.local`       | Vikram Mehta (Press Shop Owner)            | `AREA_OWNER`     | Area Owner for `PRESS_SHOP` (Pune) & `ASSEMBLY_LINE` (Chennai)    |
+| `ao.paint@opmaint.local`       | Pooja Sharma (Paint Shop Owner)            | `AREA_OWNER`     | Area Owner for `PAINT_SHOP` (Pune) & `WAREHOUSE` (Chennai)        |
+| `ao.utils@opmaint.local`       | Arjun Nair (Utilities Area Owner)          | `AREA_OWNER`     | Area Owner for `UTILITY_YARD` (Pune)                              |
+| `requester@opmaint.local`      | Sunil Verma (Maintenance Lead / Requester) | `REQUESTER`      | Creates permits, edits drafts, submits, logs work, closes permits  |
 
-- **Plant**: `PLANT-01` — Bangalore Manufacturing Unit
-  - **Press Shop** (Area Owner: `ao.press@opmaint.local`)
-    - `PRS-PRESS-01` — Hydraulic Press Machine
-    - `PRS-WELD-01` — MIG Welding Station A
-  - **Weld Bay** (Area Owner: `ao.weld@opmaint.local`)
-    - `WBY-WELD-01` — TIG Welding Bay
-    - `WBY-TANK-01` — Solvent Storage Tank (Confined Space)
-  - **Paint Booth** (Area Owner: `ao.weld@opmaint.local`)
-    - `PNT-BOOTH-01` — Electrostatic Paint Booth
-    - `PNT-COMP-01` — Air Compressor Unit
+### Plant, Area & Equipment Hierarchy
+
+- **Pune Automotive Manufacturing Facility** (`PUNE-PLANT-01`)
+  - **Heavy Stamping & Press Shop** (`PRESS_SHOP`) — Owner: `ao.press@opmaint.local`
+    - `EQ-PRS-4001` — 4000-Ton Hydraulic Transfer Press #1 (`CRITICAL`)
+    - `EQ-PRS-2500` — 2500-Ton Progressive Die Press #2 (`HIGH`)
+  - **Automated Robotic Paint Facility** (`PAINT_SHOP`) — Owner: `ao.paint@opmaint.local`
+    - `EQ-PNT-BOOTH1` — Robotic Spray Coating Booth Alpha (`HIGH`)
+  - **Central Utility & Boiler House** (`UTILITY_YARD`) — Owner: `ao.utils@opmaint.local`
+    - `EQ-UTL-BOIL1` — High-Pressure Steam Boiler Unit 1 (`CRITICAL`)
+- **Chennai Component Assembly Plant** (`CHN-PLANT-01`)
+  - **Final Assembly Line** (`ASSEMBLY_LINE`) — Owner: `ao.press@opmaint.local`
+    - `EQ-ASM-ROB01` — Welding Robot Arm — Station A (`HIGH`)
+  - **Finished Goods Warehouse** (`WAREHOUSE`) — Owner: `ao.paint@opmaint.local`
+    - `EQ-WH-CONV01` — Automated Pallet Conveyor System (`MEDIUM`)
+
+### Seeded Demonstration Permits (12 Lifecycle States)
+
+The seed script (`prisma/seed.ts`) populates the database with 12 distinct permits demonstrating the entire PTW lifecycle with complete, immutable audit trails:
+
+| Permit Number   | Status              | Type                      | Equipment      | Highlights & Seed Details                                      |
+|-----------------|---------------------|---------------------------|----------------|----------------------------------------------------------------|
+| `PTW-2026-0001` | `DRAFT`             | `HOT_WORK`                | `EQ-PRS-4001`  | Initial draft; editable by requester                           |
+| `PTW-2026-0002` | `PENDING_APPROVAL`  | `CONFINED_SPACE_ENTRY`    | `EQ-UTL-BOIL1` | Awaiting Area Owner (`ao.utils`) & Safety Officer approval     |
+| `PTW-2026-0003` | `APPROVED`          | `WORKING_AT_HEIGHT`       | `EQ-ASM-ROB01` | Both approval slots satisfied; ready for activation            |
+| `PTW-2026-0004` | `ACTIVE`            | `ELECTRICAL_ISOLATION_LOTO`| `EQ-PRS-2500` | Activated by Safety Officer; in operational progress           |
+| `PTW-2026-0005` | `ACTIVE` (Urgent)   | `HOT_WORK`                | `EQ-PRS-4001`  | **Expiring soon**: validity window expires in ~75 minutes      |
+| `PTW-2026-0006` | `ACTIVE` (Logs)     | `CONFINED_SPACE_ENTRY`    | `EQ-UTL-BOIL1` | Has work log history & active personnel entry/exit roster      |
+| `PTW-2026-0007` | `SUSPENDED`         | `HOT_WORK`                | `EQ-PNT-BOOTH1`| Suspended due to solvent fumes; work logging blocked           |
+| `PTW-2026-0008` | `CLOSED`            | `ELECTRICAL_ISOLATION_LOTO`| `EQ-PRS-4001` | Closed with work completion notes; awaiting verification       |
+| `PTW-2026-0009` | `CLOSED_VERIFIED`   | `WORKING_AT_HEIGHT`       | `EQ-WH-CONV01` | Closure verified on-site by Safety Officer (terminal state)   |
+| `PTW-2026-0010` | `EXPIRED`           | `HOT_WORK`                | `EQ-PRS-2500`  | Validity window lapsed; transitioned to EXPIRED by SYSTEM actor |
+| `PTW-2026-0011` | `REJECTED`          | `CONFINED_SPACE_ENTRY`    | `EQ-PNT-BOOTH1`| Rejected by Safety Officer with formal non-compliance reason   |
+| `PTW-2026-0012` | `CANCELLED`         | `ELECTRICAL_ISOLATION_LOTO`| `EQ-ASM-ROB01` | Cancelled by requester due to production rescheduling          |
 
 ---
 
@@ -241,58 +267,59 @@ All demo accounts use the password: **`password123`**
 
 ### Authentication
 
-| Method | Path              | Description                           |
-|--------|-------------------|---------------------------------------|
+| Method | Path              | Description                             |
+|--------|-------------------|-----------------------------------------|
 | POST   | `/api/auth/login`  | Authenticate and receive session cookie |
-| GET    | `/api/auth/me`     | Get current user from session         |
-| POST   | `/api/auth/logout` | Invalidate session cookie             |
+| GET    | `/api/auth/me`     | Get current authenticated user session  |
+| POST   | `/api/auth/logout` | Invalidate session cookie               |
 
 ### Master Data
 
-| Method | Path               | Description                |
-|--------|--------------------|----------------------------|
-| GET    | `/api/plants`      | List all plants            |
-| GET    | `/api/areas`       | List areas (filterable by `plantId`) |
+| Method | Path               | Description                             |
+|--------|--------------------|-----------------------------------------|
+| GET    | `/api/plants`      | List all plants                         |
+| GET    | `/api/areas`       | List areas (filterable by `plantId`)    |
 | GET    | `/api/equipment`   | List equipment (filterable by `areaId`) |
 
 ### Permits
 
-| Method | Path                               | Description                            |
-|--------|------------------------------------|----------------------------------------|
-| GET    | `/api/permits`                     | List permits (filterable, paginated)   |
-| POST   | `/api/permits`                     | Create new DRAFT permit                |
-| GET    | `/api/permits/:id`                 | Get full permit detail                 |
-| PATCH  | `/api/permits/:id`                 | Update DRAFT permit fields             |
-| GET    | `/api/permits/:id/actions`         | Get authorized actions for current user|
-| POST   | `/api/permits/:id/submit`          | Submit DRAFT for approval              |
-| POST   | `/api/permits/:id/approve`         | Approve an approval slot               |
-| POST   | `/api/permits/:id/reject`          | Reject with reason                     |
-| POST   | `/api/permits/:id/activate`        | Activate APPROVED permit               |
-| POST   | `/api/permits/:id/suspend`         | Suspend ACTIVE permit                  |
-| POST   | `/api/permits/:id/resume`          | Resume SUSPENDED permit                |
-| POST   | `/api/permits/:id/cancel`          | Cancel permit (permanent)              |
-| POST   | `/api/permits/:id/close`           | Close with completion notes            |
-| POST   | `/api/permits/:id/verify-closure`  | Safety Officer closure verification    |
-| GET    | `/api/permits/:id/work-logs`       | List work logs                         |
-| POST   | `/api/permits/:id/work-logs`       | Add work log (ACTIVE only)             |
-| GET    | `/api/permits/:id/entry-logs`      | List entry/exit logs                   |
-| POST   | `/api/permits/:id/entry-logs`      | Add entry/exit log (ACTIVE CS permits) |
+| Method | Path                               | Description                             |
+|--------|------------------------------------|-----------------------------------------|
+| GET    | `/api/permits`                     | List permits (filterable, paginated)    |
+| POST   | `/api/permits`                     | Create new DRAFT permit                 |
+| GET    | `/api/permits/:id`                 | Get full permit detail with lazy expiry |
+| PATCH  | `/api/permits/:id`                 | Update DRAFT permit fields              |
+| GET    | `/api/permits/:id/actions`         | Get authorized actions for current user |
+| POST   | `/api/permits/:id/submit`          | Submit DRAFT for approval               |
+| POST   | `/api/permits/:id/approve`         | Approve an approval slot                |
+| POST   | `/api/permits/:id/reject`          | Reject with formal reason               |
+| POST   | `/api/permits/:id/activate`        | Activate APPROVED permit                |
+| POST   | `/api/permits/:id/suspend`         | Suspend ACTIVE permit                   |
+| POST   | `/api/permits/:id/resume`          | Resume SUSPENDED permit                 |
+| POST   | `/api/permits/:id/cancel`          | Cancel permit (permanent)               |
+| POST   | `/api/permits/:id/close`           | Close with completion notes             |
+| POST   | `/api/permits/:id/verify-closure`  | Safety Officer closure verification     |
+| GET    | `/api/permits/:id/work-logs`       | List work logs                          |
+| POST   | `/api/permits/:id/work-logs`       | Add work log (ACTIVE status only)       |
+| GET    | `/api/permits/:id/entry-logs`      | List entry/exit logs                    |
+| POST   | `/api/permits/:id/entry-logs`      | Add entry/exit log (ACTIVE CS permits)  |
 
-### Dashboard
+### Dashboard & Scheduled Lifecycle
 
-| Method | Path             | Description                                           |
-|--------|------------------|-------------------------------------------------------|
-| GET    | `/api/dashboard` | Operational overview: permits, KPIs, expiring, approvals |
+| Method | Path                | Description                                                |
+|--------|---------------------|------------------------------------------------------------|
+| GET    | `/api/dashboard`    | Operational overview: permits, KPIs, expiring, approvals   |
+| POST   | `/api/cron/expire`  | Protected scheduled sweep endpoint (requires `CRON_SECRET`)|
 
 ---
 
-## 9. Testing
+## 9. Testing & Quality Assurance
 
 ```bash
-# Unit tests (100 tests — pure domain logic, zero DB)
+# Unit tests (100 tests — pure domain logic, zero DB, <3s)
 npm run test:unit
 
-# PostgreSQL integration tests (127 tests — real DB required)
+# PostgreSQL integration tests (142 tests — real DB required)
 npm run test:integration
 
 # TypeScript typecheck
@@ -305,18 +332,39 @@ npm run lint
 npm run build
 ```
 
-### Test Coverage Areas
+### Test Strategy & Sequential Execution
 
-| Test Suite                              | Tests | Scope |
-|-----------------------------------------|-------|-------|
-| `payload-validation.test.ts`            | 19    | Input schema validation, banned fields |
-| `submit-and-validity.test.ts`           | 17    | Submission business rules, field requirements |
-| `authorization-and-slots.test.ts`       | 31    | Role checks, slot evaluation, self-approval prevention |
-| `state-machine.test.ts`                 | 10    | State transitions, preconditions |
-| `expiry-and-conflict.test.ts`           | 13    | Expiry detection, concurrent modification |
-| `permit-registry-extensibility.test.ts` | 6     | Type-specific field validation |
-| `auth-and-security.test.ts`             | 4     | Authentication guards |
-| Integration suites (7 files)            | 127   | Real PostgreSQL: CRUD, workflow, concurrency |
+The test suite is structured into two complementary layers:
+
+1. **Unit Tests (100 tests)**:
+   - Run via `npm run test:unit` (`vitest run --exclude '**/*.integration.test.ts'`).
+   - Pure domain logic tests covering input validation, approval slot evaluation, self-approval prevention, state-machine transitions, expiry semantics, and type registry extensibility.
+   - Run in <3 seconds with zero external database dependencies.
+
+2. **Integration Tests (142 tests)**:
+   - Run via `npm run test:integration`.
+   - Executed **sequentially** across 7 test files (`postgres`, `auth-api`, `master-data`, `permit-api`, `workflow`, `operational-lifecycle`, `dashboard-api`).
+   - **Why sequential**: Each test suite spawns an isolated, real embedded PostgreSQL instance on a dedicated port (ports 54330 through 54335) with its own database, runs full Prisma migrations, installs PostgreSQL PL/pgSQL immutability triggers, seeds master data, and executes real concurrent HTTP transactions. Running sequentially prevents port collisions and avoids host CPU/memory resource starvation.
+
+### Test Coverage Summary
+
+| Suite / File                            | Tests | Type        | Scope                                                   |
+|-----------------------------------------|-------|-------------|---------------------------------------------------------|
+| `payload-validation.test.ts`            | 19    | Unit        | Input schema validation, banned fields, date boundaries |
+| `submit-and-validity.test.ts`           | 17    | Unit        | Submission business rules, checklist requirements       |
+| `authorization-and-slots.test.ts`       | 31    | Unit        | Role checks, slot evaluation, self-approval prevention  |
+| `state-machine.test.ts`                 | 10    | Unit        | Status transitions, allowed actions, preconditions      |
+| `expiry-and-conflict.test.ts`           | 13    | Unit        | Expiry detection, spatial-temporal area conflicts       |
+| `permit-registry-extensibility.test.ts` | 6     | Unit        | Type-specific field schemas, validation rules           |
+| `auth-and-security.test.ts`             | 4     | Unit        | JWT secret verification, database-backed roles          |
+| `postgres.integration.test.ts`          | 10    | Integration | PostgreSQL PL/pgSQL triggers, unique constraints, CHECK |
+| `auth-api.integration.test.ts`          | 12    | Integration | Real login, HTTP-only cookie, session endpoint `/me`    |
+| `master-data.integration.test.ts`       | 25    | Integration | Plants, areas, equipment cascading lookup APIs          |
+| `permit-api.integration.test.ts`        | 27    | Integration | Permit CRUD, pagination, filtering, input validation    |
+| `workflow.integration.test.ts`          | 31    | Integration | Multi-role approval workflow, slot fulfillment          |
+| `operational-lifecycle.integration.test.ts` | 22 | Integration | Work logs, confined space roster, suspend/resume/expire |
+| `dashboard-api.integration.test.ts`     | 15    | Integration | Dashboard KPIs, expiring permits, action evaluation     |
+| **Total**                               | **242** | **100 Unit + 142 Integration** | **Complete domain & end-to-end verification** |
 
 ---
 
@@ -378,16 +426,54 @@ This walkthrough demonstrates the complete PTW lifecycle using demo accounts.
 3. Click **Verify Closure**, add site inspection notes
 4. Status becomes `CLOSED_VERIFIED` — permit lifecycle complete
 
-### Confined Space Entry/Exit (HOT WORK → CONFINED_SPACE_ENTRY)
+### Confined Space Entry/Exit Workflow
 
-- Create a `CONFINED_SPACE_ENTRY` permit against `WBY-TANK-01`
-- After activation, the **Confined Space — Entry/Exit Log** section appears
-- Use the **Entry/Exit** toggle to log personnel entering and exiting the confined space
-- The roster summary shows how many people are currently inside
+- Create or open a `CONFINED_SPACE_ENTRY` permit against `EQ-UTL-BOIL1` (Central Utility Boiler Unit 1)
+- After activation by Safety Officer, the **Confined Space — Entry/Exit Log** section appears
+- Use the **Log Entry / Exit** toggle to record personnel entering and exiting the vessel
+- The real-time roster badge displays the live headcount of workers currently inside
 
 ---
 
-## 11. AI Usage Disclosure
+## 11. Production Deployment
+
+### Production Architecture
+- **Web Application & APIs**: Next.js 16 (App Router) deployed on **Vercel**
+- **Authoritative Database**: **PostgreSQL** hosted on **Supabase** / **Neon**
+- **Scheduled Expiry Sweep**: Vercel Cron triggering `POST /api/cron/expire` every 10 minutes
+
+### Production Environment Variables
+
+| Variable | Requirement & Description |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string with SSL (`sslmode=require`) |
+| `JWT_SECRET` | Cryptographically random secret key (minimum 32 characters; rejects default placeholder in production) |
+| `CRON_SECRET` | Secret token authorizing automated Vercel Cron expiry sweeps |
+| `NEXT_PUBLIC_APP_URL` | Canonical public URL of the deployed application (e.g. `https://opmaint.vercel.app`) |
+| `NODE_ENV` | Must be set to `production` |
+
+### Deployment Steps
+
+1. **Database Setup**:
+   ```bash
+   # Apply PostgreSQL migrations including PL/pgSQL immutability triggers
+   npx prisma migrate deploy
+
+   # Seed the 12 demonstration permits and role-based demo accounts
+   npm run db:seed
+   ```
+
+2. **Vercel Deployment**:
+   ```bash
+   # Deploy via Vercel CLI or connect GitHub repository
+   vercel --prod
+   ```
+
+3. **Configure Environment Variables** in Vercel Project Settings (`DATABASE_URL`, `JWT_SECRET`, `CRON_SECRET`, `NEXT_PUBLIC_APP_URL`, `NODE_ENV`).
+
+---
+
+## 12. AI Usage Disclosure
 
 This project was built with significant assistance from **Google Antigravity (AGY)**, an AI coding assistant. The AI assisted with:
 

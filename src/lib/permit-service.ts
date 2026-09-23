@@ -20,7 +20,7 @@ import {
   getUserEligibleApprovalSlots,
   hasUserPendingApprovalObligation,
 } from "../domain/approvals/slots";
-import { isPermitEligibleForExpiry, isExpiringSoon } from "../domain/expiry";
+import { isPermitEligibleForExpiry, isExpiringSoon, canStatusExpire } from "../domain/expiry";
 import {
   getPermitType,
   validatePermitTypeData,
@@ -286,6 +286,38 @@ export async function enforceAuthoritativeExpiry(
     const didExpire = await checkAndApplyTransactionalExpiry(tx, permitId, locked, now);
     return didExpire || locked.status === "EXPIRED";
   });
+}
+
+/**
+ * Bulk / lazy expiry reconciliation:
+ * Scans for permits that are eligible for expiry and past expiresAt,
+ * and transactionally applies EXPIRED status + SYSTEM audit log.
+ * Safe to call before queries (such as listPermits, getDashboard) without N+1 overhead,
+ * because it first queries matching candidate IDs with a fast indexed check.
+ */
+export async function reconcileExpiredPermits(
+  now: Date = new Date(),
+  limit: number = 50
+): Promise<string[]> {
+  const candidates = await prisma.permit.findMany({
+    where: {
+      status: { in: ["ACTIVE", "SUSPENDED", "APPROVED", "PENDING_APPROVAL"] },
+      expiresAt: { lte: now },
+    },
+    select: { id: true },
+    take: limit,
+  });
+
+  if (candidates.length === 0) return [];
+
+  const expiredIds: string[] = [];
+  for (const candidate of candidates) {
+    const didExpire = await enforceAuthoritativeExpiry(candidate.id, now);
+    if (didExpire) {
+      expiredIds.push(candidate.id);
+    }
+  }
+  return expiredIds;
 }
 
 /**
@@ -590,9 +622,21 @@ export async function updateDraft(
  * Enriched with current approval round status and confined-space roster.
  */
 export async function getPermit(id: string, actor?: AuthenticatedUser) {
+  const now = new Date();
+  const existing = await prisma.permit.findUnique({
+    where: { id },
+    select: { id: true, status: true, expiresAt: true },
+  });
+  if (
+    existing &&
+    canStatusExpire(existing.status as PermitStatus) &&
+    new Date(existing.expiresAt).getTime() <= now.getTime()
+  ) {
+    await enforceAuthoritativeExpiry(id, now);
+  }
+
   const permit = await loadPermitOrThrow(id);
   const permitData = toPermitData(permit);
-  const now = new Date();
 
   const approvalStatus = evaluateApprovalSlots(permitData);
   const userSlots = actor ? getUserEligibleApprovalSlots(actor, permitData) : [];
@@ -604,7 +648,7 @@ export async function getPermit(id: string, actor?: AuthenticatedUser) {
 
   return {
     ...permit,
-    isExpired: now.getTime() >= new Date(permit.expiresAt).getTime(),
+    isExpired: now.getTime() >= new Date(permit.expiresAt).getTime() || permit.status === "EXPIRED",
     isExpiringSoon: isExpiringSoon(permitData, now),
     approvalStatus: {
       ...approvalStatus,
@@ -624,9 +668,21 @@ export async function getAvailableActions(
   actor: AuthenticatedUser,
   id: string
 ) {
+  const now = new Date();
+  const existing = await prisma.permit.findUnique({
+    where: { id },
+    select: { id: true, status: true, expiresAt: true },
+  });
+  if (
+    existing &&
+    canStatusExpire(existing.status as PermitStatus) &&
+    new Date(existing.expiresAt).getTime() <= now.getTime()
+  ) {
+    await enforceAuthoritativeExpiry(id, now);
+  }
+
   const permit = await loadPermitOrThrow(id);
   const permitData = toPermitData(permit);
-  const now = new Date();
 
   const candidateActions: PermitAction[] = [
     "SUBMIT",
@@ -679,6 +735,7 @@ export async function listPermits(
   actor: AuthenticatedUser,
   query: Partial<ListPermitsQuery> = {}
 ) {
+  await reconcileExpiredPermits();
   const page = query.page ?? 1;
   const pageSize = query.pageSize ?? 50;
 
@@ -845,6 +902,7 @@ export async function getDashboard(
   query: DashboardQuery
 ) {
   const now = new Date();
+  await reconcileExpiredPermits(now);
   const twoHoursLater = new Date(now.getTime() + 2 * 60 * 60 * 1000);
 
   // 1. Filtered permit list matching the query

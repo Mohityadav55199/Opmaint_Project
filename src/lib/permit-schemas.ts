@@ -148,3 +148,50 @@ export type ListPermitsQuery = z.infer<typeof ListPermitsQuerySchema>;
 
 // Validate BannedClientFields separately and return errors for banned keys
 void BannedClientFields; // keep the type for reference
+
+// ─── Phase 4 Workflow Action Schemas ────────────────────────────────────────
+
+export const ApprovePermitSchema = z.object({
+  slot: z.enum(["AREA_OWNER", "SAFETY_OFFICER"]).optional(),
+  comment: z.string().trim().optional(),
+  signatureSvg: z.string().optional(),
+});
+export type ApprovePermitInput = z.infer<typeof ApprovePermitSchema>;
+
+export const RejectPermitSchema = z.object({
+  reason: z
+    .string({ message: "Rejection reason is required." })
+    .trim()
+    .min(1, "Rejection reason is required."),
+  slot: z.enum(["AREA_OWNER", "SAFETY_OFFICER"]).optional(),
+});
+export type RejectPermitInput = z.infer<typeof RejectPermitSchema>;
+
+export const SuspendPermitSchema = z.object({
+  reason: z
+    .string({ message: "Suspension reason is required." })
+    .trim()
+    .min(1, "Suspension reason is required."),
+});
+export type SuspendPermitInput = z.infer<typeof SuspendPermitSchema>;
+
+export const CancelPermitSchema = z.object({
+  reason: z
+    .string({ message: "Cancellation reason is required." })
+    .trim()
+    .min(1, "Cancellation reason is required."),
+});
+export type CancelPermitInput = z.infer<typeof CancelPermitSchema>;
+
+export const ClosePermitSchema = z.object({
+  workCompletionNotes: z
+    .string({ message: "Work completion notes are required." })
+    .trim()
+    .min(1, "Work completion notes are required."),
+});
+export type ClosePermitInput = z.infer<typeof ClosePermitSchema>;
+
+export const VerifyClosurePermitSchema = z.object({
+  closureVerifiedNotes: z.string().trim().optional(),
+});
+export type VerifyClosurePermitInput = z.infer<typeof VerifyClosurePermitSchema>;

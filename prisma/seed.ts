@@ -253,7 +253,7 @@ async function main() {
     console.log(`Clearing ${existingCount} existing permits for clean seed...`);
     // PostgreSQL TRUNCATE bypasses row-level DELETE triggers on AuditLog
     await prisma.$executeRawUnsafe(
-      `TRUNCATE TABLE "AuditLog", "Approval", "WorkLog", "EntryExitLog", "PermitExtension", "Permit" CASCADE`
+      `TRUNCATE TABLE "AuditLog", "Approval", "WorkLogEntry", "EntryExitLog", "PermitExtension", "Permit" CASCADE`
     );
   }
 

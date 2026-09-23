@@ -17,7 +17,8 @@ An enterprise-grade, full-stack **Permit-to-Work (PTW)** management platform for
 9. [Testing & Quality Assurance](#9-testing--quality-assurance)
 10. [End-to-End Workflow Walkthrough](#10-end-to-end-workflow-walkthrough)
 11. [Production Deployment](#11-production-deployment)
-12. [AI Usage Disclosure](#12-ai-usage-disclosure)
+12. [Known Limitations & What I'd Build Next](#12-known-limitations--what-id-build-next)
+13. [AI Usage Disclosure](#13-ai-usage-disclosure)
 
 ---
 
@@ -477,7 +478,20 @@ This walkthrough demonstrates the complete PTW lifecycle using demo accounts.
 
 ---
 
-## 12. AI Usage Disclosure
+## 12. Known Limitations & What I'd Build Next
+
+For formal architectural decisions and rationale across domain models, state transitions, security, and data integrity, see [docs/decisions.md](file:///c:/Projects/Opmaint/docs/decisions.md).
+
+Genuine current system limitations and planned enhancements:
+- **Conflict Detection**: Conflict detection logic exists and is tested (`tests/expiry-and-conflict.test.ts`), but is not currently wired into the live approval flow.
+- **Extension-Request UI**: The backend API for permit extensions (`POST /api/permits/:id/extend`) is implemented and tested, but the extension-request UI is not implemented.
+- **Admin User-Management UI**: System administrators can inspect all permits and audit logs, but the admin user-management UI is not implemented.
+- **Vercel Hobby Cron Cadence**: Vercel Hobby cron is daily (`0 0 * * *`); authoritative lazy expiry reconciliation handles read/action paths on demand.
+- **Integration Test Execution**: Integration tests should be run sequentially (`npm run test:integration`) because of embedded PostgreSQL resource usage.
+
+---
+
+## 13. AI Usage Disclosure
 
 This project was built with significant assistance from **Google Antigravity (AGY)**, an AI coding assistant. The AI assisted with:
 

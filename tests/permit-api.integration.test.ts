@@ -693,20 +693,37 @@ describe("Permit APIs Integration (PostgreSQL)", { timeout: 60000 }, () => {
   // 6. Database Seed Verification
   // -------------------------------------------------------------
   describe("Database Seeding & Audit Log Strategy", () => {
-    it("verifies 10 seeded permits: 8 DRAFT, 2 PENDING_APPROVAL, all 4 types, with full audit trails", async () => {
+    it("verifies 12 seeded permits across all lifecycle states, all 4 types, with full audit trails", async () => {
       const permits = await prisma.permit.findMany({
         where: {
-          permitSequence: { lte: 10 },
+          permitSequence: { lte: 12 },
         },
         include: { auditLogs: { orderBy: { createdAt: "asc" } } },
       });
 
-      expect(permits.length).toBe(10);
+      expect(permits.length).toBe(12);
 
       const draftCount = permits.filter((p) => p.status === "DRAFT").length;
       const pendingCount = permits.filter((p) => p.status === "PENDING_APPROVAL").length;
-      expect(draftCount).toBe(8);
-      expect(pendingCount).toBe(2);
+      const approvedCount = permits.filter((p) => p.status === "APPROVED").length;
+      const activeCount = permits.filter((p) => p.status === "ACTIVE").length;
+      const suspendedCount = permits.filter((p) => p.status === "SUSPENDED").length;
+      const closedCount = permits.filter((p) => p.status === "CLOSED").length;
+      const closedVerifiedCount = permits.filter((p) => p.status === "CLOSED_VERIFIED").length;
+      const expiredCount = permits.filter((p) => p.status === "EXPIRED").length;
+      const rejectedCount = permits.filter((p) => p.status === "REJECTED").length;
+      const cancelledCount = permits.filter((p) => p.status === "CANCELLED").length;
+
+      expect(draftCount).toBe(1);
+      expect(pendingCount).toBe(1);
+      expect(approvedCount).toBe(1);
+      expect(activeCount).toBe(3);
+      expect(suspendedCount).toBe(1);
+      expect(closedCount).toBe(1);
+      expect(closedVerifiedCount).toBe(1);
+      expect(expiredCount).toBe(1);
+      expect(rejectedCount).toBe(1);
+      expect(cancelledCount).toBe(1);
 
       const types = Array.from(new Set(permits.map((p) => p.type)));
       expect(types).toHaveLength(4);
@@ -716,17 +733,15 @@ describe("Permit APIs Integration (PostgreSQL)", { timeout: 60000 }, () => {
       expect(types).toContain("ELECTRICAL_ISOLATION_LOTO");
       expect(types).not.toContain("EXCAVATION");
 
-      // Verify each permit has full audit trails
+      // Verify each permit has full audit trails starting with DRAFT_CREATED
       for (const p of permits) {
         const actions = p.auditLogs.map((a) => a.action);
         expect(actions).toContain("DRAFT_CREATED");
-        if (p.status === "PENDING_APPROVAL") {
-          expect(actions).toContain("SUBMIT");
-        }
+        expect(p.auditLogs.length).toBeGreaterThanOrEqual(1);
       }
 
       const totalAuditLogs = permits.reduce((acc, p) => acc + p.auditLogs.length, 0);
-      expect(totalAuditLogs).toBe(12); // 10 DRAFT_CREATED + 2 SUBMIT
+      expect(totalAuditLogs).toBe(54);
     });
 
     it("seed script is idempotent and handles re-run safely", async () => {

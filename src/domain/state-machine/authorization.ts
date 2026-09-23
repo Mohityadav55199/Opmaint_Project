@@ -429,6 +429,14 @@ export function checkAction(
         };
       }
 
+      if (isPastValidity(permit, now)) {
+        return {
+          allowed: false,
+          reason: "Work cannot be logged against an expired permit (validity window has passed).",
+          httpStatus: 422,
+        };
+      }
+
       // Requester, Safety Officer, or Admin can log work
       if (permit.requesterId !== user.id && user.role !== "SAFETY_OFFICER" && user.role !== "ADMIN") {
         return {
@@ -458,6 +466,23 @@ export function checkAction(
           allowed: false,
           reason: `Entry/exit logging is only permitted when permit is ACTIVE (current: '${permit.status}').`,
           httpStatus: 409,
+        };
+      }
+
+      if (isPastValidity(permit, now)) {
+        return {
+          allowed: false,
+          reason: "Entry/exit cannot be logged against an expired permit (validity window has passed).",
+          httpStatus: 422,
+        };
+      }
+
+      // Requester, Safety Officer, or Admin can record entry/exit
+      if (permit.requesterId !== user.id && user.role !== "SAFETY_OFFICER" && user.role !== "ADMIN") {
+        return {
+          allowed: false,
+          reason: "Only the permit requester, a Safety Officer, or an Administrator may record entry/exit logs.",
+          httpStatus: 403,
         };
       }
 

@@ -195,3 +195,25 @@ export const VerifyClosurePermitSchema = z.object({
   closureVerifiedNotes: z.string().trim().optional(),
 });
 export type VerifyClosurePermitInput = z.infer<typeof VerifyClosurePermitSchema>;
+
+// ─── Phase 5 Work Logging & Entry/Exit Schemas ──────────────────────────────
+
+export const LogWorkSchema = z.object({
+  description: z
+    .string({ message: "Work log description is required." })
+    .trim()
+    .min(1, "Work log description is required."),
+  performedAt: z.coerce.date().optional(),
+});
+export type LogWorkInput = z.infer<typeof LogWorkSchema>;
+
+export const LogEntryExitSchema = z.object({
+  direction: z.enum(["ENTRY", "EXIT"], { message: "Direction must be ENTRY or EXIT" }),
+  personName: z
+    .string({ message: "Person name is required." })
+    .trim()
+    .min(1, "Person name is required."),
+  at: z.coerce.date().optional(),
+});
+export type LogEntryExitInput = z.infer<typeof LogEntryExitSchema>;
+

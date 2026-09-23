@@ -99,6 +99,15 @@ export interface EntryExitLogData {
   createdAt: Date;
 }
 
+export interface WorkLogEntryData {
+  id: string;
+  permitId: string;
+  authorId: string;
+  description: string;
+  performedAt: Date;
+  createdAt: Date;
+}
+
 export interface PermitData {
   id: string;
   permitSequence: number;
@@ -137,7 +146,9 @@ export interface PermitData {
   equipment?: EquipmentData;
   area?: AreaData; // Populated from equipment.area
   approvals?: ApprovalData[];
+  workLogs?: WorkLogEntryData[];
   entryExitLogs?: EntryExitLogData[];
   extensions?: { id?: string; status: ExtensionStatus; requestedHours: number; reason?: string }[];
 }
+
 

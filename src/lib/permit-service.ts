@@ -16,6 +16,7 @@ import {
   getNextStatus,
 } from "../domain/state-machine/engine";
 import { evaluateApprovalSlots } from "../domain/approvals/slots";
+import { isPermitEligibleForExpiry } from "../domain/expiry";
 import {
   getPermitType,
   validatePermitTypeData,
@@ -40,7 +41,10 @@ import {
   type CancelPermitInput,
   type ClosePermitInput,
   type VerifyClosurePermitInput,
+  type LogWorkInput,
+  type LogEntryExitInput,
 } from "./permit-schemas";
+
 
 // ─── Permit select shape used consistently across all reads ─────────────────
 
@@ -125,6 +129,29 @@ export const PERMIT_SELECT = {
     },
     orderBy: { createdAt: "asc" as const },
   },
+  workLogs: {
+    select: {
+      id: true,
+      authorId: true,
+      description: true,
+      performedAt: true,
+      createdAt: true,
+      author: { select: { id: true, name: true, email: true, role: true } },
+    },
+    orderBy: { performedAt: "asc" as const },
+  },
+  entryExitLogs: {
+    select: {
+      id: true,
+      direction: true,
+      personName: true,
+      at: true,
+      recordedById: true,
+      createdAt: true,
+      recordedBy: { select: { id: true, name: true, email: true, role: true } },
+    },
+    orderBy: { at: "asc" as const },
+  },
 } satisfies Prisma.PermitSelect;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -195,9 +222,90 @@ function validateTypeAndData(type: string, typeData: unknown): void {
 }
 
 /**
- * Casts a DB permit row to PermitData for use by domain functions.
- * Only maps the fields the domain engine actually reads.
+ * Checks if a locked permit row has reached expiry.
+ * If so, transitions its status to EXPIRED in the database, records a transactional
+ * SYSTEM audit log entry, and updates locked.status.
  */
+async function checkAndApplyTransactionalExpiry(
+  tx: Prisma.TransactionClient,
+  permitId: string,
+  locked: { id: string; status: string; expiresAt: Date; version: number },
+  now: Date
+): Promise<boolean> {
+  if (
+    locked.status !== "EXPIRED" &&
+    isPermitEligibleForExpiry({ status: locked.status as PermitStatus, expiresAt: locked.expiresAt }, now)
+  ) {
+    const fromStatus = locked.status;
+    locked.status = "EXPIRED";
+    await tx.permit.update({
+      where: { id: permitId },
+      data: {
+        status: "EXPIRED",
+        version: { increment: 1 },
+      },
+    });
+    await tx.auditLog.create({
+      data: {
+        permitId,
+        ...buildAuditLogData({
+          actorId: null,
+          actorLabel: "SYSTEM",
+          actorRole: "SYSTEM",
+          action: "EXPIRE",
+          fromValue: fromStatus,
+          toValue: "EXPIRED",
+          comment: "Permit validity window expired automatically (now >= expiresAt).",
+        }),
+      },
+    });
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Atomically checks and applies expiry under a row lock (FOR UPDATE), committing the
+ * EXPIRED state and SYSTEM audit log entry if the permit is eligible for expiry.
+ * Returns true if the permit was transitioned to EXPIRED or is already EXPIRED.
+ */
+export async function enforceAuthoritativeExpiry(
+  permitId: string,
+  now: Date = new Date()
+): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const [locked] = await tx.$queryRaw<Array<{ id: string; status: string; expiresAt: Date; version: number }>>`
+      SELECT id, status, "expiresAt", version FROM "Permit" WHERE id = ${permitId} FOR UPDATE
+    `;
+    if (!locked) return false;
+    const didExpire = await checkAndApplyTransactionalExpiry(tx, permitId, locked, now);
+    return didExpire || locked.status === "EXPIRED";
+  });
+}
+
+/**
+ * Computes current headcount and roster of people inside a confined space
+ * strictly derived from immutable EntryExitLog history.
+ */
+export function computeConfinedSpaceRoster(
+  logs: Array<{ personName: string; direction: "ENTRY" | "EXIT"; at: Date }>
+): { currentlyInside: string[]; headcount: number } {
+  const sorted = [...logs].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+  const inside = new Set<string>();
+  for (const log of sorted) {
+    if (log.direction === "ENTRY") {
+      inside.add(log.personName);
+    } else if (log.direction === "EXIT") {
+      inside.delete(log.personName);
+    }
+  }
+  const currentlyInside = Array.from(inside);
+  return {
+    currentlyInside,
+    headcount: currentlyInside.length,
+  };
+}
+
 /**
  * Asserts that checkAction returned allowed: true.
  * If not, maps check.httpStatus to appropriate domain error.
@@ -289,6 +397,23 @@ function toPermitData(
       decision: a.decision,
       comment: a.comment,
       createdAt: a.createdAt,
+    })),
+    workLogs: permit.workLogs?.map((w) => ({
+      id: w.id,
+      permitId: permit.id,
+      authorId: w.authorId,
+      description: w.description,
+      performedAt: w.performedAt,
+      createdAt: w.createdAt,
+    })),
+    entryExitLogs: permit.entryExitLogs?.map((e) => ({
+      id: e.id,
+      permitId: permit.id,
+      direction: e.direction,
+      personName: e.personName,
+      at: e.at,
+      recordedById: e.recordedById,
+      createdAt: e.createdAt,
     })),
   };
 }
@@ -834,19 +959,27 @@ export async function rejectPermit(
  */
 export async function activatePermit(actor: AuthenticatedUser, id: string) {
   const existing = await loadPermitOrThrow(id);
-  const permitData = toPermitData(existing);
-
   const now = new Date();
+
+  // Authoritatively enforce expiry under row lock before activation
+  const didExpire = await enforceAuthoritativeExpiry(id, now);
+  if (didExpire || existing.status === "EXPIRED") {
+    throw new UnprocessableEntityError("Permit cannot be activated: its validity window has expired.");
+  }
+
+  const permitData = toPermitData(existing);
   const check = checkAction(permitData, actor, "ACTIVATE", now);
   assertActionAllowed(check);
 
   const nextStatus = getNextStatus(existing.status, "ACTIVATE");
 
   await prisma.$transaction(async (tx) => {
-    const [locked] = await tx.$queryRaw<Array<{ id: string; status: string; version: number }>>`
-      SELECT id, status, version FROM "Permit" WHERE id = ${id} FOR UPDATE
+    const [locked] = await tx.$queryRaw<Array<{ id: string; status: string; expiresAt: Date; version: number }>>`
+      SELECT id, status, "expiresAt", version FROM "Permit" WHERE id = ${id} FOR UPDATE
     `;
     if (!locked) throw new NotFoundError("Permit not found.");
+
+    await checkAndApplyTransactionalExpiry(tx, id, locked, now);
 
     if (locked.status !== "APPROVED") {
       throw new ConflictError(`Cannot activate permit in status '${locked.status}'.`);
@@ -900,18 +1033,27 @@ export async function suspendPermit(
   }
 
   const existing = await loadPermitOrThrow(id);
-  const permitData = toPermitData(existing);
+  const now = new Date();
 
-  const check = checkAction(permitData, actor, "SUSPEND");
+  // Authoritatively enforce expiry under row lock
+  const didExpire = await enforceAuthoritativeExpiry(id, now);
+  if (didExpire || existing.status === "EXPIRED") {
+    throw new ConflictError("Cannot suspend permit in status 'EXPIRED'. Only ACTIVE permits can be suspended.");
+  }
+
+  const permitData = toPermitData(existing);
+  const check = checkAction(permitData, actor, "SUSPEND", now);
   assertActionAllowed(check);
 
   const nextStatus = getNextStatus(existing.status, "SUSPEND");
 
   await prisma.$transaction(async (tx) => {
-    const [locked] = await tx.$queryRaw<Array<{ id: string; status: string; version: number }>>`
-      SELECT id, status, version FROM "Permit" WHERE id = ${id} FOR UPDATE
+    const [locked] = await tx.$queryRaw<Array<{ id: string; status: string; expiresAt: Date; version: number }>>`
+      SELECT id, status, "expiresAt", version FROM "Permit" WHERE id = ${id} FOR UPDATE
     `;
     if (!locked) throw new NotFoundError("Permit not found.");
+
+    await checkAndApplyTransactionalExpiry(tx, id, locked, now);
 
     if (locked.status !== "ACTIVE") {
       throw new ConflictError(`Cannot suspend permit in status '${locked.status}'.`);
@@ -957,19 +1099,27 @@ export async function suspendPermit(
  */
 export async function resumePermit(actor: AuthenticatedUser, id: string) {
   const existing = await loadPermitOrThrow(id);
-  const permitData = toPermitData(existing);
-
   const now = new Date();
+
+  // Authoritatively enforce expiry under row lock
+  const didExpire = await enforceAuthoritativeExpiry(id, now);
+  if (didExpire || existing.status === "EXPIRED") {
+    throw new UnprocessableEntityError("Permit cannot be resumed: its validity window has expired.");
+  }
+
+  const permitData = toPermitData(existing);
   const check = checkAction(permitData, actor, "RESUME", now);
   assertActionAllowed(check);
 
   const nextStatus = getNextStatus(existing.status, "RESUME");
 
   await prisma.$transaction(async (tx) => {
-    const [locked] = await tx.$queryRaw<Array<{ id: string; status: string; version: number }>>`
-      SELECT id, status, version FROM "Permit" WHERE id = ${id} FOR UPDATE
+    const [locked] = await tx.$queryRaw<Array<{ id: string; status: string; expiresAt: Date; version: number }>>`
+      SELECT id, status, "expiresAt", version FROM "Permit" WHERE id = ${id} FOR UPDATE
     `;
     if (!locked) throw new NotFoundError("Permit not found.");
+
+    await checkAndApplyTransactionalExpiry(tx, id, locked, now);
 
     if (locked.status !== "SUSPENDED") {
       throw new ConflictError(`Cannot resume permit in status '${locked.status}'.`);
@@ -1021,19 +1171,27 @@ export async function closePermit(
   }
 
   const existing = await loadPermitOrThrow(id);
-  const permitData = toPermitData(existing);
-
   const now = new Date();
+
+  // Authoritatively enforce expiry under row lock
+  const didExpire = await enforceAuthoritativeExpiry(id, now);
+  if (didExpire || existing.status === "EXPIRED") {
+    throw new ConflictError("Cannot close permit in status 'EXPIRED'. Only ACTIVE permits can be closed.");
+  }
+
+  const permitData = toPermitData(existing);
   const check = checkAction(permitData, actor, "CLOSE", now);
   assertActionAllowed(check);
 
   const nextStatus = getNextStatus(existing.status, "CLOSE");
 
   await prisma.$transaction(async (tx) => {
-    const [locked] = await tx.$queryRaw<Array<{ id: string; status: string; version: number }>>`
-      SELECT id, status, version FROM "Permit" WHERE id = ${id} FOR UPDATE
+    const [locked] = await tx.$queryRaw<Array<{ id: string; status: string; expiresAt: Date; version: number }>>`
+      SELECT id, status, "expiresAt", version FROM "Permit" WHERE id = ${id} FOR UPDATE
     `;
     if (!locked) throw new NotFoundError("Permit not found.");
+
+    await checkAndApplyTransactionalExpiry(tx, id, locked, now);
 
     if (locked.status !== "ACTIVE") {
       throw new ConflictError(`Cannot close permit in status '${locked.status}'.`);
@@ -1191,4 +1349,277 @@ export async function cancelPermit(
 
   return loadPermitOrThrow(id);
 }
+
+/**
+ * Adds a work log entry to an ACTIVE permit.
+ *
+ * Rules:
+ * - Must be ACTIVE
+ * - Expired permits rejected (and transitioned to EXPIRED)
+ * - Requester, Safety Officer, or Admin authorized
+ * - Description cannot be empty
+ * - Append-only operational record + audit log
+ */
+export async function addWorkLog(
+  actor: AuthenticatedUser,
+  id: string,
+  input: LogWorkInput
+) {
+  if (!input.description || !input.description.trim()) {
+    throw new UnprocessableEntityError("Work log description is required.");
+  }
+
+  const existing = await loadPermitOrThrow(id);
+  const now = new Date();
+
+  // Authoritatively enforce expiry under row lock
+  const didExpire = await enforceAuthoritativeExpiry(id, now);
+  if (didExpire || existing.status === "EXPIRED") {
+    throw new ConflictError(
+      "Cannot log work against permit in status 'EXPIRED'. Work logging is permitted only when status is ACTIVE."
+    );
+  }
+
+  const permitData = toPermitData(existing);
+  const check = checkAction(permitData, actor, "LOG_WORK", now);
+  assertActionAllowed(check);
+
+  const performedAt = input.performedAt ? new Date(input.performedAt) : now;
+  if (isNaN(performedAt.getTime())) {
+    throw new UnprocessableEntityError("Invalid performedAt date provided.");
+  }
+  if (performedAt.getTime() > now.getTime() + 60000) {
+    throw new UnprocessableEntityError("Work log timestamp cannot be in the future.");
+  }
+
+  const workLog = await prisma.$transaction(async (tx) => {
+    const [locked] = await tx.$queryRaw<Array<{ id: string; status: string; expiresAt: Date; version: number }>>`
+      SELECT id, status, "expiresAt", version FROM "Permit" WHERE id = ${id} FOR UPDATE
+    `;
+    if (!locked) throw new NotFoundError("Permit not found.");
+
+    await checkAndApplyTransactionalExpiry(tx, id, locked, now);
+
+    if (locked.status !== "ACTIVE") {
+      throw new ConflictError(
+        `Cannot log work against permit in status '${locked.status}'. Work logging is permitted only when status is ACTIVE.`
+      );
+    }
+
+    const created = await tx.workLogEntry.create({
+      data: {
+        permitId: id,
+        authorId: actor.id,
+        description: input.description.trim(),
+        performedAt,
+      },
+      include: {
+        author: { select: { id: true, name: true, email: true, role: true } },
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        permitId: id,
+        ...buildAuditLogData({
+          actorId: actor.id,
+          actorLabel: actor.name,
+          actorRole: actor.role,
+          action: "LOG_WORK",
+          comment: input.description.trim(),
+          metadata: {
+            workLogId: created.id,
+            performedAt: performedAt.toISOString(),
+          },
+        }),
+      },
+    });
+
+    return created;
+  });
+
+  return workLog;
+}
+
+/**
+ * Returns all work logs for a permit in chronological order.
+ */
+export async function listWorkLogs(permitId: string) {
+  await loadPermitOrThrow(permitId);
+  return prisma.workLogEntry.findMany({
+    where: { permitId },
+    orderBy: { performedAt: "asc" },
+    include: {
+      author: { select: { id: true, name: true, email: true, role: true } },
+    },
+  });
+}
+
+/**
+ * Adds an Entry/Exit record to an ACTIVE CONFINED_SPACE_ENTRY permit.
+ *
+ * Rules:
+ * - Only CONFINED_SPACE_ENTRY permits allowed
+ * - Must be ACTIVE
+ * - Expired permits rejected (and transitioned to EXPIRED)
+ * - Row locked FOR UPDATE before checking person's latest entry/exit state (concurrency safe)
+ * - Exit cannot precede entry; duplicate consecutive entry/exit rejected
+ * - Person cannot exit if not currently inside
+ * - Append-only operational record + audit log
+ */
+export async function addEntryExitLog(
+  actor: AuthenticatedUser,
+  id: string,
+  input: LogEntryExitInput
+) {
+  if (!input.personName || !input.personName.trim()) {
+    throw new UnprocessableEntityError("Person name is required.");
+  }
+  if (!["ENTRY", "EXIT"].includes(input.direction)) {
+    throw new UnprocessableEntityError("Direction must be ENTRY or EXIT.");
+  }
+
+  const existing = await loadPermitOrThrow(id);
+  const now = new Date();
+
+  // Authoritatively enforce expiry under row lock
+  const didExpire = await enforceAuthoritativeExpiry(id, now);
+  if (didExpire || existing.status === "EXPIRED") {
+    throw new ConflictError(
+      "Cannot record entry/exit against permit in status 'EXPIRED'. Entry/exit logging is permitted only when status is ACTIVE."
+    );
+  }
+
+  const permitData = toPermitData(existing);
+  const check = checkAction(permitData, actor, "LOG_ENTRY_EXIT", now);
+  assertActionAllowed(check);
+
+  const eventAt = input.at ? new Date(input.at) : now;
+  if (isNaN(eventAt.getTime())) {
+    throw new UnprocessableEntityError("Invalid event date provided.");
+  }
+  if (eventAt.getTime() > now.getTime() + 60000) {
+    throw new UnprocessableEntityError("Entry/exit timestamp cannot be in the future.");
+  }
+
+  const personTrimmed = input.personName.trim();
+
+  const entryExit = await prisma.$transaction(async (tx) => {
+    // 1. Lock the permit row BEFORE querying person's latest state to prevent race conditions
+    const [locked] = await tx.$queryRaw<Array<{ id: string; status: string; type: string; expiresAt: Date; version: number }>>`
+      SELECT id, status, type, "expiresAt", version FROM "Permit" WHERE id = ${id} FOR UPDATE
+    `;
+    if (!locked) throw new NotFoundError("Permit not found.");
+
+    await checkAndApplyTransactionalExpiry(tx, id, locked, now);
+
+    if (locked.status !== "ACTIVE") {
+      throw new ConflictError(
+        `Cannot record entry/exit against permit in status '${locked.status}'. Entry/exit logging is permitted only when status is ACTIVE.`
+      );
+    }
+
+    const def = getPermitType(locked.type);
+    if (!def?.hasEntryExitLog) {
+      throw new UnprocessableEntityError(
+        `Entry/exit logging is not applicable to permit type '${locked.type}'. It is only enabled for Confined Space Entry.`
+      );
+    }
+
+    // 2. Query person's latest entry/exit record under this lock
+    const latest = await tx.entryExitLog.findFirst({
+      where: {
+        permitId: id,
+        personName: { equals: personTrimmed, mode: "insensitive" },
+      },
+      orderBy: { at: "desc" },
+    });
+
+    if (input.direction === "ENTRY") {
+      if (latest && latest.direction === "ENTRY") {
+        throw new UnprocessableEntityError(
+          `"${personTrimmed}" is already recorded as inside the confined space. Cannot record duplicate ENTRY.`
+        );
+      }
+      if (latest && eventAt.getTime() < new Date(latest.at).getTime()) {
+        throw new UnprocessableEntityError(
+          `Entry timestamp (${eventAt.toISOString()}) cannot precede previous exit timestamp (${new Date(latest.at).toISOString()}).`
+        );
+      }
+    } else {
+      // EXIT
+      if (!latest || latest.direction !== "ENTRY") {
+        throw new UnprocessableEntityError(
+          `"${personTrimmed}" is not recorded as inside the confined space. Cannot record EXIT without an active ENTRY.`
+        );
+      }
+      if (eventAt.getTime() < new Date(latest.at).getTime()) {
+        throw new UnprocessableEntityError(
+          `Exit timestamp (${eventAt.toISOString()}) cannot precede corresponding entry timestamp (${new Date(latest.at).toISOString()}).`
+        );
+      }
+    }
+
+    // 3. Create entry/exit record
+    const created = await tx.entryExitLog.create({
+      data: {
+        permitId: id,
+        direction: input.direction,
+        personName: personTrimmed,
+        at: eventAt,
+        recordedById: actor.id,
+      },
+      include: {
+        recordedBy: { select: { id: true, name: true, email: true, role: true } },
+      },
+    });
+
+    // 4. Create transactional AuditLog
+    await tx.auditLog.create({
+      data: {
+        permitId: id,
+        ...buildAuditLogData({
+          actorId: actor.id,
+          actorLabel: actor.name,
+          actorRole: actor.role,
+          action: "LOG_ENTRY_EXIT",
+          comment: `${input.direction}: ${personTrimmed}`,
+          metadata: {
+            entryExitId: created.id,
+            personName: personTrimmed,
+            direction: input.direction,
+            at: eventAt.toISOString(),
+          },
+        }),
+      },
+    });
+
+    return created;
+  });
+
+  return entryExit;
+}
+
+/**
+ * Returns all entry/exit logs for a permit and the current roster.
+ */
+export async function listEntryExitLogs(permitId: string) {
+  await loadPermitOrThrow(permitId);
+  const logs = await prisma.entryExitLog.findMany({
+    where: { permitId },
+    orderBy: { at: "asc" },
+    include: {
+      recordedBy: { select: { id: true, name: true, email: true, role: true } },
+    },
+  });
+
+  const roster = computeConfinedSpaceRoster(logs);
+
+  return {
+    logs,
+    headcount: roster.headcount,
+    currentlyInside: roster.currentlyInside,
+  };
+}
+
 

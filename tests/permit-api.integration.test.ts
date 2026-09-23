@@ -120,7 +120,7 @@ describe("Permit APIs Integration (PostgreSQL)", { timeout: 60000 }, () => {
 
     execSync("npx prisma migrate deploy", {
       env: { ...process.env, DATABASE_URL: TEST_DATABASE_URL },
-      stdio: "pipe",
+      stdio: "inherit",
     });
 
     // Run seed to populate initial master data and the 10 seeded permits

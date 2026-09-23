@@ -207,3 +207,41 @@ export function evaluateApprovalSlots(permit: PermitData): ApprovalRoundStatus {
     rejectionReason,
   };
 }
+
+/**
+ * Returns all unfilled required approval slots that the authenticated user is currently eligible to satisfy.
+ * Uses canUserSatisfySlot as the single source of truth.
+ */
+export function getUserEligibleApprovalSlots(
+  user: AuthenticatedUser,
+  permit: PermitData
+): ApprovalSlot[] {
+  if (permit.status !== "PENDING_APPROVAL") return [];
+  if (permit.requesterId === user.id) return []; // Self-approval prohibited
+
+  const requiredSlots = getRequiredSlots(permit.type);
+  const roundStatus = evaluateApprovalSlots(permit);
+  if (roundStatus.hasRejection) return [];
+
+  const eligible: ApprovalSlot[] = [];
+  for (const slot of requiredSlots) {
+    if (!roundStatus.slots[slot]?.isFilled) {
+      const check = canUserSatisfySlot(slot, user, permit);
+      if (check.eligible) {
+        eligible.push(slot);
+      }
+    }
+  }
+  return eligible;
+}
+
+/**
+ * Checks whether a user has an active, unfilled approval obligation for this permit in the current round.
+ * Reuses getUserEligibleApprovalSlots and canUserSatisfySlot as the sole source of truth.
+ */
+export function hasUserPendingApprovalObligation(
+  user: AuthenticatedUser,
+  permit: PermitData
+): boolean {
+  return getUserEligibleApprovalSlots(user, permit).length > 0;
+}

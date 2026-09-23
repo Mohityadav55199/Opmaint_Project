@@ -28,11 +28,11 @@ export async function GET(
   context?: RouteContext
 ): Promise<NextResponse> {
   try {
-    await requireAuthenticatedUser(request);
+    const actor = await requireAuthenticatedUser(request);
     const id = await extractId(request, context);
     if (!id) throw new BadRequestError("Permit ID not provided in URL.");
 
-    const permit = await getPermit(id);
+    const permit = await getPermit(id, actor);
     return NextResponse.json({ data: permit });
   } catch (error) {
     return handleApiError(error);

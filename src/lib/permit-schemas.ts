@@ -135,9 +135,18 @@ export const ListPermitsQuerySchema = z.object({
   plantId: z.string().optional(),
   requesterId: z.string().optional(),
   mine: z
-    .string()
-    .optional()
-    .transform((v) => v === "true"),
+    .preprocess(
+      (v) => (v === "true" ? true : v === "false" ? false : v),
+      z.boolean().optional()
+    )
+    .optional(),
+  myApprovals: z
+    .preprocess(
+      (v) => (v === "true" ? true : v === "false" ? false : v),
+      z.boolean().optional()
+    )
+    .optional(),
+  date: z.string().optional(),
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
   page: z.coerce.number().int().min(1).default(1),
@@ -145,6 +154,35 @@ export const ListPermitsQuerySchema = z.object({
 });
 
 export type ListPermitsQuery = z.infer<typeof ListPermitsQuerySchema>;
+
+// Dashboard query schema
+export const DashboardQuerySchema = z.object({
+  status: z.string().optional(),
+  type: z.string().optional(),
+  equipmentId: z.string().optional(),
+  areaId: z.string().optional(),
+  plantId: z.string().optional(),
+  requesterId: z.string().optional(),
+  mine: z
+    .preprocess(
+      (v) => (v === "true" ? true : v === "false" ? false : v),
+      z.boolean().optional()
+    )
+    .optional(),
+  myApprovals: z
+    .preprocess(
+      (v) => (v === "true" ? true : v === "false" ? false : v),
+      z.boolean().optional()
+    )
+    .optional(),
+  date: z.string().optional(),
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export type DashboardQuery = z.infer<typeof DashboardQuerySchema>;
 
 // Validate BannedClientFields separately and return errors for banned keys
 void BannedClientFields; // keep the type for reference

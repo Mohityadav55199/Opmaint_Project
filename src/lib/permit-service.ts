@@ -10,13 +10,17 @@
  */
 import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
-import { ApprovalSlot, AuthenticatedUser, PermitData, PermitStatus } from "../domain/types";
+import { ApprovalSlot, AuthenticatedUser, PermitAction, PermitData, PermitStatus } from "../domain/types";
 import {
   checkAction,
   getNextStatus,
 } from "../domain/state-machine/engine";
-import { evaluateApprovalSlots } from "../domain/approvals/slots";
-import { isPermitEligibleForExpiry } from "../domain/expiry";
+import {
+  evaluateApprovalSlots,
+  getUserEligibleApprovalSlots,
+  hasUserPendingApprovalObligation,
+} from "../domain/approvals/slots";
+import { isPermitEligibleForExpiry, isExpiringSoon } from "../domain/expiry";
 import {
   getPermitType,
   validatePermitTypeData,
@@ -35,6 +39,7 @@ import {
   type CreatePermitInput,
   type PatchPermitInput,
   type ListPermitsQuery,
+  type DashboardQuery,
   type ApprovePermitInput,
   type RejectPermitInput,
   type SuspendPermitInput,
@@ -582,20 +587,187 @@ export async function updateDraft(
 /**
  * Retrieves a single permit by id.
  * Any authenticated user may view any permit.
+ * Enriched with current approval round status and confined-space roster.
  */
-export async function getPermit(id: string) {
-  return loadPermitOrThrow(id);
+export async function getPermit(id: string, actor?: AuthenticatedUser) {
+  const permit = await loadPermitOrThrow(id);
+  const permitData = toPermitData(permit);
+  const now = new Date();
+
+  const approvalStatus = evaluateApprovalSlots(permitData);
+  const userSlots = actor ? getUserEligibleApprovalSlots(actor, permitData) : [];
+
+  let roster = undefined;
+  if (permit.type === "CONFINED_SPACE_ENTRY" && permit.entryExitLogs) {
+    roster = computeConfinedSpaceRoster(permit.entryExitLogs);
+  }
+
+  return {
+    ...permit,
+    isExpired: now.getTime() >= new Date(permit.expiresAt).getTime(),
+    isExpiringSoon: isExpiringSoon(permitData, now),
+    approvalStatus: {
+      ...approvalStatus,
+      canCurrentUserApprove: userSlots.length > 0,
+      currentUserEligibleSlots: userSlots,
+    },
+    roster,
+  };
+}
+
+/**
+ * Evaluates and returns all domain actions currently available to the authenticated user
+ * for the specified permit. Uses checkAction() from the domain state machine as the
+ * single source of truth.
+ */
+export async function getAvailableActions(
+  actor: AuthenticatedUser,
+  id: string
+) {
+  const permit = await loadPermitOrThrow(id);
+  const permitData = toPermitData(permit);
+  const now = new Date();
+
+  const candidateActions: PermitAction[] = [
+    "SUBMIT",
+    "APPROVE",
+    "REJECT",
+    "ACTIVATE",
+    "SUSPEND",
+    "RESUME",
+    "LOG_WORK",
+    "LOG_ENTRY_EXIT",
+    "CLOSE",
+    "VERIFY_CLOSURE",
+    "CANCEL",
+    "EDIT",
+  ];
+
+  const available: Array<{
+    action: PermitAction;
+    allowed: boolean;
+    reason?: string;
+    eligibleSlots?: ApprovalSlot[];
+  }> = [];
+
+  for (const action of candidateActions) {
+    const check = checkAction(permitData, actor, action, now);
+    if (check.allowed) {
+      available.push({
+        action,
+        allowed: true,
+        eligibleSlots: check.eligibleSlots,
+      });
+    }
+  }
+
+  return {
+    permitId: id,
+    status: permit.status,
+    type: permit.type,
+    actions: available.map((a) => a.action),
+    details: available,
+  };
 }
 
 /**
  * Lists permits with optional filters.
+ * Supports status, type, areaId, equipmentId, date, mine, and myApprovals.
  * areaId / plantId filtering works through Equipment → Area → Plant.
  */
 export async function listPermits(
   actor: AuthenticatedUser,
-  query: ListPermitsQuery
+  query: Partial<ListPermitsQuery> = {}
 ) {
-  // Build Prisma where clause without any redundant foreign keys on Permit
+  const page = query.page ?? 1;
+  const pageSize = query.pageSize ?? 50;
+
+  // If myApprovals is requested
+  if (query.myApprovals) {
+    // Pure requesters cannot approve permits
+    if (actor.role === "REQUESTER") {
+      return {
+        data: [],
+        total: 0,
+        page,
+        pageSize,
+        pagination: {
+          total: 0,
+          page,
+          pageSize,
+          totalPages: 0,
+        },
+      };
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const where: Record<string, any> = {
+      status: "PENDING_APPROVAL",
+      requesterId: { not: actor.id }, // Self-approval prohibited
+    };
+
+    if (query.type) where.type = query.type;
+    if (query.equipmentId) where.equipmentId = query.equipmentId;
+    if (query.areaId) {
+      where.equipment = { ...(where.equipment ?? {}), areaId: query.areaId };
+    }
+    if (query.plantId) {
+      where.equipment = {
+        ...(where.equipment ?? {}),
+        area: { plantId: query.plantId },
+      };
+    }
+
+    if (actor.role === "AREA_OWNER") {
+      where.equipment = {
+        ...(where.equipment ?? {}),
+        area: { ...(where.equipment?.area ?? {}), ownerId: actor.id },
+      };
+    }
+
+    // Date range
+    if (query.date) {
+      const dayStart = new Date(query.date);
+      if (!isNaN(dayStart.getTime())) {
+        dayStart.setUTCHours(0, 0, 0, 0);
+        const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000 - 1);
+        where.plannedStartTime = { gte: dayStart, lte: dayEnd };
+      }
+    } else if (query.from || query.to) {
+      where.plannedStartTime = {};
+      if (query.from) where.plannedStartTime.gte = query.from;
+      if (query.to) where.plannedStartTime.lte = query.to;
+    }
+
+    const candidatePermits = await prisma.permit.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      select: PERMIT_SELECT,
+    });
+
+    const eligiblePermits = candidatePermits.filter((p) =>
+      hasUserPendingApprovalObligation(actor, toPermitData(p))
+    );
+
+    const total = eligiblePermits.length;
+    const skip = (page - 1) * pageSize;
+    const paged = eligiblePermits.slice(skip, skip + pageSize);
+
+    return {
+      data: paged,
+      total,
+      page,
+      pageSize,
+      pagination: {
+        total,
+        page,
+        pageSize,
+        totalPages: Math.ceil(total / pageSize),
+      },
+    };
+  }
+
+  // Standard filtering (non-myApprovals)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const where: Record<string, any> = {};
 
@@ -617,20 +789,27 @@ export async function listPermits(
     };
   }
 
-  // Date range on plannedStartTime
-  if (query.from || query.to) {
+  // Date filter: single day (date) or range (from/to)
+  if (query.date) {
+    const dayStart = new Date(query.date);
+    if (!isNaN(dayStart.getTime())) {
+      dayStart.setUTCHours(0, 0, 0, 0);
+      const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000 - 1);
+      where.plannedStartTime = { gte: dayStart, lte: dayEnd };
+    }
+  } else if (query.from || query.to) {
     where.plannedStartTime = {};
     if (query.from) where.plannedStartTime.gte = query.from;
     if (query.to) where.plannedStartTime.lte = query.to;
   }
 
-  const skip = (query.page - 1) * query.pageSize;
+  const skip = (page - 1) * pageSize;
 
   const [permits, total] = await prisma.$transaction([
     prisma.permit.findMany({
       where,
       skip,
-      take: query.pageSize,
+      take: pageSize,
       orderBy: { createdAt: "desc" },
       select: PERMIT_SELECT,
     }),
@@ -640,14 +819,117 @@ export async function listPermits(
   return {
     data: permits,
     total,
-    page: query.page,
-    pageSize: query.pageSize,
+    page,
+    pageSize,
     pagination: {
       total,
-      page: query.page,
-      pageSize: query.pageSize,
-      totalPages: Math.ceil(total / query.pageSize),
+      page,
+      pageSize,
+      totalPages: Math.ceil(total / pageSize),
     },
+  };
+}
+
+/**
+ * Returns dashboard payload containing:
+ * 1. Filtered and paginated permit list
+ * 2. Active permits currently in progress (status === ACTIVE && now < expiresAt)
+ * 3. Permits expiring within the next 2 hours (status === ACTIVE && now < expiresAt <= now + 2h)
+ * 4. Pending approvals relevant to authenticated user
+ * 5. Useful system-wide and user operational summary counts
+ *
+ * Strictly pure read; does not mutate database rows.
+ */
+export async function getDashboard(
+  actor: AuthenticatedUser,
+  query: DashboardQuery
+) {
+  const now = new Date();
+  const twoHoursLater = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+
+  // 1. Filtered permit list matching the query
+  const permitsResult = await listPermits(actor, query);
+
+  // 2. Active permits currently in progress (pure read, non-expired)
+  const activePermits = await prisma.permit.findMany({
+    where: {
+      status: "ACTIVE",
+      expiresAt: { gt: now },
+    },
+    orderBy: { actualStartTime: "desc" },
+    take: 10,
+    select: PERMIT_SELECT,
+  });
+
+  // 3. Permits expiring within the next 2 hours (pure read, strictly active and now < expiresAt <= now + 2h)
+  const expiringPermits = await prisma.permit.findMany({
+    where: {
+      status: "ACTIVE",
+      expiresAt: {
+        gt: now,
+        lte: twoHoursLater,
+      },
+    },
+    orderBy: { expiresAt: "asc" },
+    take: 10,
+    select: PERMIT_SELECT,
+  });
+
+  // 4. Pending approvals relevant to the authenticated user
+  const pendingApprovalsResult = await listPermits(actor, {
+    myApprovals: true,
+    page: 1,
+    pageSize: 10,
+  });
+
+  // 5. Global & user summary counts
+  const statusGroups = await prisma.permit.groupBy({
+    by: ["status"],
+    _count: { id: true },
+  });
+  const countsByStatus: Record<string, number> = {};
+  for (const g of statusGroups) {
+    countsByStatus[g.status] = g._count.id;
+  }
+
+  const myPermitsCount = await prisma.permit.count({
+    where: { requesterId: actor.id },
+  });
+
+  const expiringSoonCount = await prisma.permit.count({
+    where: {
+      status: "ACTIVE",
+      expiresAt: {
+        gt: now,
+        lte: twoHoursLater,
+      },
+    },
+  });
+
+  const summary = {
+    total: Object.values(countsByStatus).reduce((a, b) => a + b, 0),
+    draft: countsByStatus["DRAFT"] || 0,
+    pendingApproval: countsByStatus["PENDING_APPROVAL"] || 0,
+    approved: countsByStatus["APPROVED"] || 0,
+    active: countsByStatus["ACTIVE"] || 0,
+    suspended: countsByStatus["SUSPENDED"] || 0,
+    closed: countsByStatus["CLOSED"] || 0,
+    closedVerified: countsByStatus["CLOSED_VERIFIED"] || 0,
+    rejected: countsByStatus["REJECTED"] || 0,
+    expired: countsByStatus["EXPIRED"] || 0,
+    cancelled: countsByStatus["CANCELLED"] || 0,
+    myPermitsCount,
+    myPendingApprovalsCount: pendingApprovalsResult.pagination.total,
+    expiringSoonCount,
+  };
+
+  return {
+    permits: permitsResult.data,
+    pagination: permitsResult.pagination,
+    activePermits,
+    expiringPermits,
+    myPendingApprovals: pendingApprovalsResult.data,
+    summary,
   };
 }
 

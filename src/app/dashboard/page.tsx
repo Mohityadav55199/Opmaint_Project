@@ -58,9 +58,11 @@ export default function DashboardPage() {
         if (filters.myApprovals) params.set("myApprovals", "true");
         if (filters.date) params.set("date", filters.date);
 
-        const res = await api.get<DashboardResponse>(`/api/dashboard?${params.toString()}`);
+        const res = await api.get<{ data: DashboardResponse }>(
+          `/api/dashboard?${params.toString()}`
+        );
         if (!cancelled) {
-          setData(res);
+          setData(res.data);
           setError(null);
           setLoading(false);
         }
@@ -111,7 +113,7 @@ export default function DashboardPage() {
   };
 
   // Filter client-side by text search if provided
-  const displayedPermits = data?.permits.filter((p) => {
+  const displayedPermits = (data?.permits ?? []).filter((p) => {
     if (!filters.search) return true;
     const term = filters.search.toLowerCase();
     return (
@@ -121,7 +123,7 @@ export default function DashboardPage() {
       p.equipment?.tagNumber?.toLowerCase().includes(term) ||
       p.requester?.name?.toLowerCase().includes(term)
     );
-  }) || [];
+  });
 
   return (
     <AppShell>

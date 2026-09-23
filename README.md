@@ -437,10 +437,14 @@ This walkthrough demonstrates the complete PTW lifecycle using demo accounts.
 
 ## 11. Production Deployment
 
+### Live Deployment
+- **Production URL**: [https://opmaint-project.vercel.app](https://opmaint-project.vercel.app)
+- **Status**: Live and verified with Render PostgreSQL authoritative database
+
 ### Production Architecture
 - **Web Application & APIs**: Next.js 16 (App Router) deployed on **Vercel**
-- **Authoritative Database**: **PostgreSQL** hosted on **Supabase** / **Neon**
-- **Scheduled Expiry Sweep**: Vercel Cron triggering `POST /api/cron/expire` every 10 minutes
+- **Authoritative Database**: **PostgreSQL** hosted on **Render** (`sslmode=require`)
+- **Scheduled Expiry Sweep**: Vercel Cron triggering `POST /api/cron/expire` daily
 
 ### Production Environment Variables
 
